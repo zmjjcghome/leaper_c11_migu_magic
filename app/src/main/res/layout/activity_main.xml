@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="第一步：选择 APK 文件"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <Button
+        android:id="@+id/btn_select_apk"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="选择 APK 文件" />
+
+    <TextView
+        android:id="@+id/tv_selected_apk"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingVertical="8dp"
+        android:text="未选择文件"
+        android:textColor="#666" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="第二步：设置监控目标路径"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <EditText
+        android:id="@+id/et_target_path"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="例：/storage/emulated/0/Download/name1.apk"
+        android:inputType="textUri" />
+
+    <Button
+        android:id="@+id/btn_toggle_monitor"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="开始监控" />
+
+    <TextView
+        android:id="@+id/tv_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="状态：待机"
+        android:textColor="#000"
+        android:textSize="14sp" />
+</LinearLayout>
