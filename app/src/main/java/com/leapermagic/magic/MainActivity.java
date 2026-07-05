@@ -36,21 +36,43 @@ public class MainActivity extends AppCompatActivity {
 
     private ActivityResultLauncher<Intent> selectApkLauncher;
     private ActivityResultLauncher<Intent> manageStorageLauncher;
+    // 延迟保存的 Handler
+    private final Handler saveHandler = new Handler(Looper.getMainLooper());
+    private final Runnable saveRunnable = () -> savePath(etTargetPath.getText().toString().trim());
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+
         tvSelectedApk = findViewById(R.id.tv_selected_apk);
         etTargetPath = findViewById(R.id.et_target_path);
         btnToggleMonitor = findViewById(R.id.btn_toggle_monitor);
         tvStatus = findViewById(R.id.tv_status);
 
-        // 默认目标路径
-        etTargetPath.setText("/storage/self/primary/Android/data/com.leapmotor.appcenter/files/download/com.migu.car.music.apk");
+        // 加载保存的路径，没有则使用默认路径
+        String savedPath = prefs.getString(KEY_TARGET_PATH, "");
+        if (!savedPath.isEmpty()) {
+            etTargetPath.setText(savedPath);
+        } else {
+            etTargetPath.setText(DEFAULT_PATH);
+        }
 
-        // 注册选择 APK 文件的回调
+        // 监听路径变化，自动保存
+        etTargetPath.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override
+            public void afterTextChanged(Editable s) {
+                saveHandler.removeCallbacks(saveRunnable);
+                saveHandler.postDelayed(saveRunnable, 500);
+            }
+        });
+
         selectApkLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
@@ -60,7 +82,6 @@ public class MainActivity extends AppCompatActivity {
                     }
                 });
 
-        // 注册 Android 11+ 特殊权限回调
         manageStorageLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 result -> {
@@ -71,7 +92,6 @@ public class MainActivity extends AppCompatActivity {
                     }
                 });
 
-        // 选择 APK 按钮
         findViewById(R.id.btn_select_apk).setOnClickListener(v -> {
             Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
             intent.setType("application/vnd.android.package-archive");
@@ -79,7 +99,6 @@ public class MainActivity extends AppCompatActivity {
             selectApkLauncher.launch(Intent.createChooser(intent, "选择 APK 文件"));
         });
 
-        // 开始 / 停止监控按钮
         btnToggleMonitor.setOnClickListener(v -> {
             if (isMonitoring) {
                 stopMonitoring();
@@ -90,6 +109,13 @@ public class MainActivity extends AppCompatActivity {
 
         checkPermissions();
     }
+
+    private void savePath(String path) {
+        if (!path.isEmpty() && !path.equals(prefs.getString(KEY_TARGET_PATH, ""))) {
+            prefs.edit().putString(KEY_TARGET_PATH, path).apply();
+        }
+    }
+
 
     private void checkPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
