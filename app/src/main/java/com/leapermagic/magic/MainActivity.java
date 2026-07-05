@@ -1,6 +1,7 @@
 package com.leapermagic.magic;
 
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -8,6 +9,8 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
@@ -23,11 +26,17 @@ import java.io.InputStream;
 
 public class MainActivity extends AppCompatActivity {
 
+    private static final String PREFS_NAME = "leapermagic_magic_prefs";
+    private static final String KEY_TARGET_PATH = "target_path";
+    private static final String DEFAULT_PATH =
+            "/storage/self/primary/Android/data/com.leapmotor.appcenter/files/download/com.migu.car.music.apk";
+
     private Uri selectedApkUri;
     private String targetPath;
     private boolean isMonitoring = false;
     private Thread monitorThread;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private SharedPreferences prefs;
 
     private TextView tvSelectedApk;
     private EditText etTargetPath;
@@ -36,6 +45,7 @@ public class MainActivity extends AppCompatActivity {
 
     private ActivityResultLauncher<Intent> selectApkLauncher;
     private ActivityResultLauncher<Intent> manageStorageLauncher;
+
     // 延迟保存的 Handler
     private final Handler saveHandler = new Handler(Looper.getMainLooper());
     private final Runnable saveRunnable = () -> savePath(etTargetPath.getText().toString().trim());
