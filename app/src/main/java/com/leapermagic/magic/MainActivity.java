@@ -123,7 +123,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-            Toast.makeText(this, "请先授予"所有文件访问权限"", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "请先授予'所有文件访问权限'", Toast.LENGTH_SHORT).show();
             Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
             intent.setData(Uri.parse("package:" + getPackageName()));
             manageStorageLauncher.launch(intent);
@@ -180,7 +180,7 @@ public class MainActivity extends AppCompatActivity {
         try (InputStream inputStream = getContentResolver().openInputStream(selectedApkUri);
              FileOutputStream outputStream = new FileOutputStream(targetFile)) {
             if (inputStream == null) throw new Exception("无法打开文件");
-            byte[] buffer = new byte;
+            byte[] buffer = new byte[50];
             int bytesRead;
             while ((bytesRead = inputStream.read(buffer)) != -1) {
                 outputStream.write(buffer, 0, bytesRead);
