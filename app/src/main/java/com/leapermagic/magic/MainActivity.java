@@ -48,8 +48,7 @@ public class MainActivity extends AppCompatActivity {
         tvStatus = findViewById(R.id.tv_status);
 
         // 默认目标路径
-        etTargetPath.setText(Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DOWNLOADS) + "/name1.apk");
+        etTargetPath.setText("/storage/self/primary/Android/data/com.leapmotor.appcenter/files/download/com.migu.car.music.apk");
 
         // 注册选择 APK 文件的回调
         selectApkLauncher = registerForActivityResult(
