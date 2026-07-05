@@ -1,3 +1,4 @@
 <resources>
-    <style name="Theme.AppCompat.Light.DarkActionBar" parent="Theme.AppCompat.Light.DarkActionBar" />
+    <style name="Theme.AppCompat.Light.DarkActionBar" />
 </resources>
+
