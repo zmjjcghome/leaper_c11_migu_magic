@@ -119,7 +119,7 @@ public class MainActivity extends AppCompatActivity {
                         actualDexPath = null;
                         actualApkPath = null;
                         btnExecuteInstall.setEnabled(false);
-                        appendLog("已选择 APK，请点击"准备文件"");
+                        appendLog("已选择 APK，请点击'准备文件'");
                     }
                 });
 
