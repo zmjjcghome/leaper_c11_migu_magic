@@ -61,21 +61,21 @@
         android:text="离谱安装2 执行安装"
          />
 
-    <TextView
-        android:id="@+id/tv_status"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="状态：待机"
-        android:textColor="#000"
-        android:textSize="14sp" />
+
 
     <ScrollView
     android:layout_width="match_parent"
-    android:layout_height="wrap_content"
+    android:layout_height="200dp"
     android:background="#1A1A1A"
     android:padding="12dp">
-
+        <TextView
+            android:id="@+id/tv_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="状态：待机"
+            android:textColor="#000"
+            android:textSize="14sp" />
         <TextView
             android:id="@+id/tv_log"
             android:layout_width="match_parent"
