@@ -47,7 +47,12 @@ public class AdbPortDetector {
         }
 
         // 策略5：扫描 35000-50000 范围 (Android 11+ 无线调试常用范围)
-        if (callback != null) callback.onLog("扫描端口范围 35000-50000...");
+        if (callback != null) callback.onLog("扫描端口范围 5000-5999 35000-50000...");
+        port = scanRange(5000, 5999, callback);
+        if (port > 0) {
+            if (callback != null) callback.onLog("扫描发现端口: " + port);
+            return port;
+        }
         port = scanRange(35000, 50000, callback);
         if (port > 0) {
             if (callback != null) callback.onLog("扫描发现端口: " + port);
