@@ -328,6 +328,7 @@ public class MainActivity extends AppCompatActivity {
      * 备选：直接在 Android Java 层使用 PackageInstaller + 反射绕过
      * 注意：此方法需要系统级权限（system UID 或 root），普通 App 无法直接调用
      */
+    /****
     @SuppressWarnings("unused")
     private void performDirectBypassInstall(String apkPath) {
         try {
@@ -387,7 +388,8 @@ public class MainActivity extends AppCompatActivity {
             e.printStackTrace();
         }
     }
-
+**/
+    
     // ============================================================
     // 以下为原有的文件替换监控功能（保持不变）
     // ============================================================
