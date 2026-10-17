@@ -168,7 +168,7 @@ public class MainActivity extends AppCompatActivity {
      * 在 onCreate 或用户点击某个按钮时调用
      */
     private void initAdbConnection() {
-        new Thread(() -> {
+        //new Thread(() -> {
             appendLog("========== 开始检测 adbd ==========");
     
             // 自动检测端口
@@ -193,7 +193,7 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("[提示] 请在设置中开启无线调试 (Android 11+)");
                 appendLog("[提示] 或通过 USB 执行: adb tcpip 5555");
             }
-        }).start();
+        //}).start();
     }
     
     // ============================================================
