@@ -47,6 +47,12 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
         android:text="开始监控" />
+    
+    <Button
+    android:id="@+id/btn_shell_install"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:text="离谱安装apk (Shell绕过)" />
 
     <TextView
         android:id="@+id/tv_status"
