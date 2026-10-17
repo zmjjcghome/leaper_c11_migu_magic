@@ -414,6 +414,8 @@ public class MainActivity extends AppCompatActivity {
 
         btnExecuteInstall.setEnabled(false);
         tvStatus.setText("正在执行绕过安装...");
+        appendLog("========== 开始初始化adb ==========");
+        initAdbConnection();
         appendLog("========== 开始执行安装 ==========");
         appendLog("DEX: " + actualDexPath);
         appendLog("APK: " + actualApkPath);
@@ -441,7 +443,6 @@ public class MainActivity extends AppCompatActivity {
     
         String cmd = "export CLASSPATH=" + dexPath + " && " +
                      "app_process /system/framework " + INSTALLER_CLASS + " " + apkPath;
-    
         // 如果 ADB 连接可用，优先使用（shell UID 权限）
         if (adbConnection != null && adbdPort > 0) {
             appendLog("[ADB] 使用 adbd shell 执行 (UID=2000)");
