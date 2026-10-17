@@ -37,13 +37,13 @@ public class MainActivity extends AppCompatActivity {
     // ====== Shell 绕过安装常量 ======
     private static final String[] DEX_CANDIDATE_PATHS = {
             "/data/local/tmp/Api64Installer.dex",
-            "/sdcard/Api64Installer.dex",
-            "/data/data/com.leapermagic.magic/files/Api64Installer.dex"
+            "/data/data/com.leapermagic.magic/files/Api64Installer.dex",
+            "/sdcard/Api64Installer.dex"
     };
     private static final String[] APK_CANDIDATE_PATHS = {
             "/data/local/tmp/install_target.apk",
-            "/sdcard/install_target.apk",
-            "/data/data/com.leapermagic.magic/files/install_target.apk"
+            "/data/data/com.leapermagic.magic/files/install_target.apk",
+            "/sdcard/install_target.apk"
     };
     private static final String INSTALLER_CLASS = "com.lipu.install.Api64Installer";
 
