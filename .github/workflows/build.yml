@@ -45,9 +45,17 @@ jobs:
       - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: apk-release
+          name: apk-release.apk
           path: app/build/outputs/apk/release/app-release.apk
+      
+      - name: Upload firmware to wormhole.app
+        run: |
+          ls -l
 
+          cargo install --git https://github.com/trumank/wormhole-cli.git
+          wormhole-cli upload app/build/outputs/apk/release/app-release.apk 2>&1 | tee wormhole.app.log
+          echo "::warning file=wormhole.app::$(cat wormhole.app.log | grep https://wormhole.app)"
+          
 #      - name: Build Debug APK
 #        run: ./gradlew assembleDebug
 
