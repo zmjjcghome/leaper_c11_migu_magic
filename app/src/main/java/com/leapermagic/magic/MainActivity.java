@@ -2,7 +2,6 @@ package com.leapermagic.magic;
 
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.content.pm.PackageInstaller;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -27,7 +26,6 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.lang.reflect.Field;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -36,10 +34,18 @@ public class MainActivity extends AppCompatActivity {
     private static final String DEFAULT_PATH =
             "/storage/self/primary/Android/data/com.leapmotor.appcenter/files/download/com.migu.car.music.apk";
 
-    // ====== 新增：绕过安装所需的常量 ======
-    private static final String DEX_SOURCE_PATH = "/data/local/tmp/Api64Installer.dex";
+    // ====== Shell 绕过安装常量 ======
+    private static final String[] DEX_CANDIDATE_PATHS = {
+            "/data/local/tmp/Api64Installer.dex",
+            "/sdcard/Api64Installer.dex",
+            "/data/data/com.leapermagic.magic/files/Api64Installer.dex"
+    };
+    private static final String[] APK_CANDIDATE_PATHS = {
+            "/data/local/tmp/install_target.apk",
+            "/sdcard/install_target.apk",
+            "/data/data/com.leapermagic.magic/files/install_target.apk"
+    };
     private static final String INSTALLER_CLASS = "com.lipu.install.Api64Installer";
-    private static final int INSTALL_REASON_ENTERPRISE_POLICY = 0x40; // INSTALL_REASON_ENTERPRISE_POLICY
 
     private Uri selectedApkUri;
     private String targetPath;
@@ -49,10 +55,16 @@ public class MainActivity extends AppCompatActivity {
     private SharedPreferences prefs;
 
     private TextView tvSelectedApk;
+    private TextView tvLog;
     private EditText etTargetPath;
     private Button btnToggleMonitor;
-    private Button btnShellInstall; // 新增：Shell 安装按钮
+    private Button btnPrepareFiles;    // 按钮1：复制 dex + apk
+    private Button btnExecuteInstall;  // 按钮2：执行安装
     private TextView tvStatus;
+
+    // 记录最终成功的路径
+    private String actualDexPath = null;
+    private String actualApkPath = null;
 
     private ActivityResultLauncher<Intent> selectApkLauncher;
     private ActivityResultLauncher<Intent> manageStorageLauncher;
@@ -68,10 +80,15 @@ public class MainActivity extends AppCompatActivity {
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
 
         tvSelectedApk = findViewById(R.id.tv_selected_apk);
+        tvLog = findViewById(R.id.tv_log);
         etTargetPath = findViewById(R.id.et_target_path);
         btnToggleMonitor = findViewById(R.id.btn_toggle_monitor);
-        btnShellInstall = findViewById(R.id.btn_shell_install); // 需要在布局中新增此按钮
+        btnPrepareFiles = findViewById(R.id.btn_prepare_files);
+        btnExecuteInstall = findViewById(R.id.btn_execute_install);
         tvStatus = findViewById(R.id.tv_status);
+
+        // 初始状态：安装按钮不可用
+        btnExecuteInstall.setEnabled(false);
 
         String savedPath = prefs.getString(KEY_TARGET_PATH, "");
         if (!savedPath.isEmpty()) {
@@ -98,6 +115,11 @@ public class MainActivity extends AppCompatActivity {
                     if (result.getResultCode() == RESULT_OK && result.getData() != null) {
                         selectedApkUri = result.getData().getData();
                         tvSelectedApk.setText("已选择: " + selectedApkUri.getPath());
+                        // 重新选择 APK 后需要重新准备文件
+                        actualDexPath = null;
+                        actualApkPath = null;
+                        btnExecuteInstall.setEnabled(false);
+                        appendLog("已选择 APK，请点击"准备文件"");
                     }
                 });
 
@@ -126,168 +148,264 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // ====== 新增：Shell 安装按钮点击事件 ======
-        btnShellInstall.setOnClickListener(v -> performShellInstall());
+        // ====== 按钮1：准备文件 ======
+        btnPrepareFiles.setOnClickListener(v -> prepareFiles());
+
+        // ====== 按钮2：执行安装 ======
+        btnExecuteInstall.setOnClickListener(v -> executeInstall());
 
         checkPermissions();
     }
 
     // ============================================================
-    // 新增功能：通过 shell context 绕过 PMS 白名单和签名检查安装 APK
+    // 日志辅助方法
     // ============================================================
+    private void appendLog(String msg) {
+        uiHandler.post(() -> {
+            String current = tvLog.getText().toString();
+            String timestamp = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                    .format(new java.util.Date());
+            String newLine = "[" + timestamp + "] " + msg;
+            if (current.isEmpty()) {
+                tvLog.setText(newLine);
+            } else {
+                tvLog.setText(current + "\n" + newLine);
+            }
+        });
+    }
 
-    /**
-     * 核心方法：将 APK 通过 shell context 安装，绕过 PMS 白名单和签名检查
-     * 
-     * 原理：
-     * 1. 将内嵌的 classes.dex（Api64Installer.dex）push 到 /data/local/tmp/
-     * 2. 通过 app_process 在 shell context 下运行 Api64Installer
-     * 3. Api64Installer 内部使用 PackageInstaller + setInstallReason(0x40) + 反射修改 installFlags
-     *    从而绕过 PMS（PackageManagerService）的白名单和签名校验
-     */
-    private void performShellInstall() {
+    // ============================================================
+    // 按钮1：准备文件（复制 DEX + APK）
+    // ============================================================
+    private void prepareFiles() {
         if (selectedApkUri == null) {
             Toast.makeText(this, "请先选择要安装的 APK", Toast.LENGTH_SHORT).show();
             return;
         }
 
-        // 先把 APK 复制到 /data/local/tmp/
-        String destApkPath = "/data/local/tmp/install_target.apk";
+        btnPrepareFiles.setEnabled(false);
+        tvStatus.setText("正在准备文件...");
+        appendLog("========== 开始准备文件 ==========");
 
-        tvStatus.setText("正在准备绕过安装...");
         new Thread(() -> {
-            try {
-                // Step 1: 释放内嵌的 classes.dex -> Api64Installer.dex 到 /data/local/tmp/
-                if (!pushDexToDataLocalTmp()) {
-                    uiHandler.post(() -> {
-                        tvStatus.setText("DEX 释放失败");
-                        Toast.makeText(MainActivity.this, "Api64Installer.dex 释放失败", Toast.LENGTH_SHORT).show();
-                    });
-                    return;
-                }
-
-                // Step 2: 复制目标 APK 到 /data/local/tmp/
-                if (!copyApkTo(destApkPath)) {
-                    uiHandler.post(() -> {
-                        tvStatus.setText("APK 复制失败");
-                        Toast.makeText(MainActivity.this, "APK 复制到 /data/local/tmp/ 失败", Toast.LENGTH_SHORT).show();
-                    });
-                    return;
-                }
-
-                uiHandler.post(() -> tvStatus.setText("正在执行绕过安装..."));
-
-                // Step 3: 执行 app_process 命令，在 shell context 下调用 Api64Installer
-                // 该 Installer 内部使用 PackageInstaller + setInstallReason(0x40) + 反射修改 installFlags
-                String result = executeShellInstall(destApkPath);
-
+            // Step 1: 释放 DEX
+            actualDexPath = pushDexWithFallback();
+            if (actualDexPath == null) {
                 uiHandler.post(() -> {
-                    tvStatus.setText("安装结果: " + result);
-                    Toast.makeText(MainActivity.this, "安装完成: " + result, Toast.LENGTH_LONG).show();
+                    tvStatus.setText("DEX 释放失败，查看日志");
+                    btnPrepareFiles.setEnabled(true);
                 });
-
-            } catch (Exception e) {
-                uiHandler.post(() -> {
-                    tvStatus.setText("安装异常: " + e.getMessage());
-                    Toast.makeText(MainActivity.this, "安装失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-                });
+                return;
             }
+            appendLog("DEX 释放成功 → " + actualDexPath);
+
+            // Step 2: 复制 APK
+            actualApkPath = copyApkWithFallback();
+            if (actualApkPath == null) {
+                uiHandler.post(() -> {
+                    tvStatus.setText("APK 复制失败，查看日志");
+                    btnPrepareFiles.setEnabled(true);
+                });
+                return;
+            }
+            appendLog("APK 复制成功 → " + actualApkPath);
+
+            uiHandler.post(() -> {
+                tvStatus.setText("文件准备完成，可执行安装");
+                btnPrepareFiles.setEnabled(true);
+                btnExecuteInstall.setEnabled(true);
+                Toast.makeText(MainActivity.this, "文件准备完成", Toast.LENGTH_SHORT).show();
+            });
         }).start();
     }
 
     /**
-     * 从 APK 的 assets 或 raw 资源中提取内嵌的 classes.dex，
-     * 重命名为 Api64Installer.dex 并 push 到 /data/local/tmp/
+     * 尝试多个路径释放 DEX，返回成功写入的路径
      */
-    private boolean pushDexToDataLocalTmp() {
+    private String pushDexWithFallback() {
+        for (String path : DEX_CANDIDATE_PATHS) {
+            appendLog("尝试释放 DEX → " + path);
+            if (tryPushDex(path)) {
+                return path;
+            }
+            appendLog("  ✗ 失败");
+        }
+        appendLog("所有 DEX 路径均写入失败！");
+        return null;
+    }
+
+    private boolean tryPushDex(String destPath) {
         try {
-            // 方式一：如果 dex 放在 assets 目录
-            // InputStream dexStream = getAssets().open("classes.dex");
+            File destFile = new File(destPath);
 
-            // 方式二：如果 dex 放在 res/raw 目录（如 raw/api64_installer_dex）
-            // 此处以 assets 为例，开发者可按实际情况调整
-            InputStream dexStream = getAssets().open("classes.dex");
-
-            File destFile = new File("/data/local/tmp/Api64Installer.dex");
-
-            // 如果已存在则先删除
-            if (destFile.exists()) {
-                destFile.delete();
+            // 确保父目录存在
+            File parent = destFile.getParentFile();
+            if (parent != null && !parent.exists()) {
+                boolean mkdirResult = parent.mkdirs();
+                appendLog("  mkdirs " + parent.getAbsolutePath() + " → " + mkdirResult);
             }
 
+            // 检查父目录是否可写
+            if (parent != null && !parent.canWrite()) {
+                appendLog("  父目录不可写: " + parent.getAbsolutePath());
+                return false;
+            }
+
+            // 删除旧文件
+            if (destFile.exists()) {
+                boolean deleted = destFile.delete();
+                appendLog("  删除旧文件 → " + deleted);
+            }
+
+            // 从 assets 读取
+            InputStream dexStream = getAssets().open("classes.dex");
+            if (dexStream == null) {
+                appendLog("  assets/classes.dex 不存在！");
+                return false;
+            }
+
+            int available = dexStream.available();
+            appendLog("  assets/classes.dex 大小: " + available + " bytes");
+
+            // 写入文件
             try (FileOutputStream fos = new FileOutputStream(destFile)) {
                 byte[] buffer = new byte[8192];
-                int bytesRead;
+                int bytesRead, total = 0;
                 while ((bytesRead = dexStream.read(buffer)) != -1) {
                     fos.write(buffer, 0, bytesRead);
+                    total += bytesRead;
                 }
                 fos.flush();
+                appendLog("  写入 " + total + " bytes");
             }
             dexStream.close();
 
-            // 设置可执行权限
+            // 设置权限
             destFile.setReadable(true, false);
-            destFile.setWritable(true, false);
+            destFile.setExecutable(true, false);
 
-            return destFile.exists() && destFile.length() > 0;
+            boolean success = destFile.exists() && destFile.length() > 0;
+            appendLog("  最终: exists=" + destFile.exists() + ", size=" + destFile.length() + " → " + (success ? "✓" : "✗"));
+            return success;
+
         } catch (Exception e) {
+            appendLog("  异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
             e.printStackTrace();
             return false;
         }
     }
 
     /**
-     * 将用户选择的 APK 复制到指定路径
+     * 尝试多个路径复制 APK，返回成功写入的路径
      */
-    private boolean copyApkTo(String destPath) {
+    private String copyApkWithFallback() {
+        for (String path : APK_CANDIDATE_PATHS) {
+            appendLog("尝试复制 APK → " + path);
+            if (tryCopyApk(path)) {
+                return path;
+            }
+            appendLog("  ✗ 失败");
+        }
+        appendLog("所有 APK 路径均写入失败！");
+        return null;
+    }
+
+    private boolean tryCopyApk(String destPath) {
         try {
             File destFile = new File(destPath);
-            if (destFile.exists()) {
-                destFile.delete();
+
+            // 确保父目录存在
+            File parent = destFile.getParentFile();
+            if (parent != null && !parent.exists()) {
+                boolean mkdirResult = parent.mkdirs();
+                appendLog("  mkdirs " + parent.getAbsolutePath() + " → " + mkdirResult);
             }
 
+            // 检查父目录是否可写
+            if (parent != null && !parent.canWrite()) {
+                appendLog("  父目录不可写: " + parent.getAbsolutePath());
+                return false;
+            }
+
+            // 删除旧文件
+            if (destFile.exists()) {
+                boolean deleted = destFile.delete();
+                appendLog("  删除旧文件 → " + deleted);
+            }
+
+            // 从 URI 复制
             try (InputStream inputStream = getContentResolver().openInputStream(selectedApkUri);
-                 FileOutputStream outputStream = new FileOutputStream(destFile)) {
-                if (inputStream == null) return false;
+                 FileOutputStream fos = new FileOutputStream(destFile)) {
+                if (inputStream == null) {
+                    appendLog("  ContentResolver.openInputStream 返回 null");
+                    return false;
+                }
 
                 byte[] buffer = new byte[8192];
-                int bytesRead;
+                int bytesRead, total = 0;
                 while ((bytesRead = inputStream.read(buffer)) != -1) {
-                    outputStream.write(buffer, 0, bytesRead);
+                    fos.write(buffer, 0, bytesRead);
+                    total += bytesRead;
                 }
-                outputStream.flush();
+                fos.flush();
+                appendLog("  写入 " + total + " bytes");
             }
-            return destFile.exists() && destFile.length() > 0;
+
+            destFile.setReadable(true, false);
+
+            boolean success = destFile.exists() && destFile.length() > 0;
+            appendLog("  最终: exists=" + destFile.exists() + ", size=" + destFile.length() + " → " + (success ? "✓" : "✗"));
+            return success;
+
         } catch (Exception e) {
+            appendLog("  异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
             e.printStackTrace();
             return false;
         }
     }
 
+    // ============================================================
+    // 按钮2：执行安装
+    // ============================================================
+    private void executeInstall() {
+        if (actualDexPath == null || actualApkPath == null) {
+            Toast.makeText(this, "请先准备文件", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        btnExecuteInstall.setEnabled(false);
+        tvStatus.setText("正在执行绕过安装...");
+        appendLog("========== 开始执行安装 ==========");
+        appendLog("DEX: " + actualDexPath);
+        appendLog("APK: " + actualApkPath);
+
+        new Thread(() -> {
+            String result = executeShellInstall(actualDexPath, actualApkPath);
+
+            uiHandler.post(() -> {
+                tvStatus.setText("安装结果: " + result);
+                btnExecuteInstall.setEnabled(true);
+                Toast.makeText(MainActivity.this, "安装完成: " + result, Toast.LENGTH_LONG).show();
+            });
+        }).start();
+    }
+
     /**
-     * 执行 shell 命令：
-     * export CLASSPATH=/data/local/tmp/Api64Installer.dex
-     * app_process /system/framework com.lipu.install.Api64Installer /data/local/tmp/xxx.apk
-     * 
-     * Api64Installer 内部会：
-     * 1. 获取 PackageInstaller 实例
-     * 2. 调用 setInstallReason(INSTALL_REASON_ENTERPRISE_POLICY) 即 0x40
-     * 3. 反射修改 installFlags，绕过 PMS 白名单和签名检查
+     * 执行：
+     * export CLASSPATH=<dexPath>
+     * app_process /system/framework com.lipu.install.Api64Installer <apkPath>
      */
-    private String executeShellInstall(String apkPath) {
+    private String executeShellInstall(String dexPath, String apkPath) {
         StringBuilder output = new StringBuilder();
         try {
-            // 构建命令：
-            // export CLASSPATH=/data/local/tmp/Api64Installer.dex && 
-            // app_process /system/framework com.lipu.install.Api64Installer /data/local/tmp/install_target.apk
-            String[] cmd = {
-                "sh",
-                "-c",
-                "export CLASSPATH=" + DEX_SOURCE_PATH + " && " +
-                "app_process /system/framework " + INSTALLER_CLASS + " " + apkPath
-            };
+            String cmd = "export CLASSPATH=" + dexPath + " && " +
+                         "app_process /system/framework " + INSTALLER_CLASS + " " + apkPath;
 
-            Process process = Runtime.getRuntime().exec(cmd);
+            appendLog("执行命令: " + cmd);
+
+            String[] shCmd = { "sh", "-c", cmd };
+
+            Process process = Runtime.getRuntime().exec(shCmd);
 
             // 读取标准输出
             try (BufferedReader reader = new BufferedReader(
@@ -295,6 +413,7 @@ public class MainActivity extends AppCompatActivity {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     output.append(line).append("\n");
+                    appendLog("[OUT] " + line);
                 }
             }
 
@@ -304,20 +423,27 @@ public class MainActivity extends AppCompatActivity {
                 String line;
                 while ((line = errorReader.readLine()) != null) {
                     output.append("[ERR] ").append(line).append("\n");
+                    appendLog("[ERR] " + line);
                 }
             }
 
             process.waitFor();
             int exitCode = process.exitValue();
             output.insert(0, "ExitCode=" + exitCode + " | ");
+            appendLog("进程退出码: " + exitCode);
 
         } catch (Exception e) {
             output.append("Exception: ").append(e.getMessage());
+            appendLog("异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
         }
 
         String result = output.toString().trim();
-        return result.isEmpty() ? "Success (no output)" : result;
+        if (result.isEmpty()) {
+            result = "Success (no output)";
+        }
+        return result;
     }
+
 
     // ============================================================
     // 备选方案：直接在 Java 层通过反射绕过安装限制（需要系统权限）
@@ -389,7 +515,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 **/
-    
     // ============================================================
     // 以下为原有的文件替换监控功能（保持不变）
     // ============================================================
