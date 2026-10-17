@@ -50,19 +50,16 @@
     
      <Button
         android:id="@+id/btn_prepare_files"
-        android:layout_width="0dp"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:layout_marginEnd="8dp"
         android:text="离谱安装1 准备文件" />
 
     <Button
         android:id="@+id/btn_execute_install"
-        android:layout_width="0dp"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_weight="1"
         android:text="离谱安装2 执行安装"
-        android:enabled="false" />
+         />
 
     <TextView
         android:id="@+id/tv_status"
@@ -75,19 +72,18 @@
 
     <ScrollView
     android:layout_width="match_parent"
-    android:layout_height="0dp"
-    android:layout_weight="1"
+    android:layout_height="wrap_content"
     android:background="#1A1A1A"
     android:padding="12dp">
 
-    <TextView
-        android:id="@+id/tv_log"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:textColor="#00FF00"
-        android:textSize="12sp"
-        android:typeface="monospace"
-        android:text="" />
+        <TextView
+            android:id="@+id/tv_log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#00FF00"
+            android:textSize="12sp"
+            android:typeface="monospace"
+            android:text="" />
 
     </ScrollView>
 </LinearLayout>
