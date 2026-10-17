@@ -46,7 +46,12 @@ public class MainActivity extends AppCompatActivity {
             "/sdcard/install_target.apk"
     };
     private static final String INSTALLER_CLASS = "com.lipu.install.Api64Installer";
-
+    /** 当前的 adbd 端口，-1 表示未连接 */
+    private int adbdPort = -1;
+    
+    /** ADB 连接实例 */
+    private AdbConnection adbConnection;
+    
     private Uri selectedApkUri;
     private String targetPath;
     private boolean isMonitoring = false;
@@ -156,7 +161,40 @@ public class MainActivity extends AppCompatActivity {
 
         checkPermissions();
     }
-
+    
+    /**
+     * 初始化：自动检测 adbd 端口并建立连接
+     * 在 onCreate 或用户点击某个按钮时调用
+     */
+    private void initAdbConnection() {
+        new Thread(() -> {
+            appendLog("========== 开始检测 adbd ==========");
+    
+            // 自动检测端口
+            adbdPort = AdbPortDetector.detect(-1, msg -> {
+                runOnUiThread(() -> appendLog("[检测] " + msg));
+            });
+    
+            if (adbdPort > 0) {
+                appendLog("[成功] 找到 adbd 端口: " + adbdPort);
+                // 建立持久连接
+                try {
+                    adbConnection = new AdbConnection();
+                    adbConnection.connect("127.0.0.1", adbdPort, 5000);
+                    appendLog("[成功] 已连接到 adbd (端口 " + adbdPort + ")");
+                } catch (IOException e) {
+                    appendLog("[失败] 连接 adbd 失败: " + e.getMessage());
+                    adbdPort = -1;
+                    adbConnection = null;
+                }
+            } else {
+                appendLog("[失败] 未找到 adbd 监听端口");
+                appendLog("[提示] 请在设置中开启无线调试 (Android 11+)");
+                appendLog("[提示] 或通过 USB 执行: adb tcpip 5555");
+            }
+        }).start();
+    }
+    
     // ============================================================
     // 日志辅助方法
     // ============================================================
@@ -394,55 +432,100 @@ public class MainActivity extends AppCompatActivity {
      * 执行：
      * export CLASSPATH=<dexPath>
      * app_process /system/framework com.lipu.install.Api64Installer <apkPath>
+     *//**
+     * 修改后的 executeShellInstall — 通过 ADB 以 shell UID 执行
      */
     private String executeShellInstall(String dexPath, String apkPath) {
         StringBuilder output = new StringBuilder();
+    
+        String cmd = "export CLASSPATH=" + dexPath + " && " +
+                     "app_process /system/framework " + INSTALLER_CLASS + " " + apkPath;
+    
+        // 如果 ADB 连接可用，优先使用（shell UID 权限）
+        if (adbConnection != null && adbdPort > 0) {
+            appendLog("[ADB] 使用 adbd shell 执行 (UID=2000)");
+            try {
+                AdbConnection.ShellResult result = adbConnection.shell(cmd);
+                output.append("ExitCode=").append(result.exitCode).append("\n");
+                
+                if (result.stdout != null && !result.stdout.isEmpty()) {
+                    output.append("STDOUT:\n").append(result.stdout);
+                }
+                if (result.stderr != null && !result.stderr.isEmpty()) {
+                    output.append("STDERR:\n").append(result.stderr);
+                }
+    
+                appendLog("[ADB] 退出码: " + result.exitCode);
+                if (result.isSuccess()) {
+                    appendLog("[ADB] 安装命令执行成功");
+                    File targetFile = new File(apkPath);
+                    if (targetFile.exists()) {
+                        if (targetFile.exists() && !targetFile.delete()) {
+                            appendLog("[ADB] 无法删除temp apk文件:"+apkPath);
+                        } else {
+                            appendLog("[ADB] 成功删除temp apk文件:"+apkPath);
+                        }
+                    }
+                } else {
+                    appendLog("[ADB] 安装命令执行失败");
+                }
+    
+                String finalResult = output.toString().trim();
+                if (finalResult.isEmpty()) finalResult = "Success (no output)";
+                return finalResult;
+    
+            } catch (IOException e) {
+                appendLog("[ADB] 执行异常: " + e.getMessage());
+                // ADB 连接可能已断开，回退到 sh
+                appendLog("[ADB] 回退到普通 sh 执行...");
+            }
+        }
+    
+        // 回退：普通 sh -c 方式
+        appendLog("[SH] 使用普通 sh 执行 (App UID)");
         try {
-            String cmd = "export CLASSPATH=" + dexPath + " && " +
-                         "app_process /system/framework " + INSTALLER_CLASS + " " + apkPath;
-
-            appendLog("执行命令: " + cmd);
-
             String[] shCmd = { "sh", "-c", cmd };
-
             Process process = Runtime.getRuntime().exec(shCmd);
-
-            // 读取标准输出
+    
+            // 读取输出（原逻辑）
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     output.append(line).append("\n");
-                    appendLog("[OUT] " + line);
                 }
             }
-
-            // 读取错误输出
-            try (BufferedReader errorReader = new BufferedReader(
+            try (BufferedReader errReader = new BufferedReader(
                     new InputStreamReader(process.getErrorStream()))) {
                 String line;
-                while ((line = errorReader.readLine()) != null) {
+                while ((line = errReader.readLine()) != null) {
                     output.append("[ERR] ").append(line).append("\n");
-                    appendLog("[ERR] " + line);
                 }
             }
-
             process.waitFor();
-            int exitCode = process.exitValue();
-            output.insert(0, "ExitCode=" + exitCode + " | ");
-            appendLog("进程退出码: " + exitCode);
-
+            output.insert(0, "ExitCode=" + process.exitValue() + "\n");
+    
         } catch (Exception e) {
             output.append("Exception: ").append(e.getMessage());
-            appendLog("异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
         }
-
+    
         String result = output.toString().trim();
-        if (result.isEmpty()) {
-            result = "Success (no output)";
-        }
+        if (result.isEmpty()) result = "Success (no output)";
         return result;
     }
+    
+    /**
+     * 清理资源
+     */
+    private void closeAdbConnection() {
+        if (adbConnection != null) {
+            try {
+                adbConnection.close();
+            } catch (IOException ignored) {}
+            adbConnection = null;
+        }
+    }
+
 
 
     // ============================================================
@@ -684,5 +767,6 @@ public class MainActivity extends AppCompatActivity {
     protected void onDestroy() {
         super.onDestroy();
         stopMonitoring();
+        closeAdbConnection();
     }
 }
