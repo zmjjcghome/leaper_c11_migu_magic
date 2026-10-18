@@ -27,6 +27,8 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.IOException;
+import java.net.Socket;
+import java.net.InetSocketAddress;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -443,7 +445,7 @@ public class MainActivity extends AppCompatActivity {
                      "app_process /system/framework " + INSTALLER_CLASS + " " + apkPath;
         // 对目标端口做诊断
         String diag = diagnosePort("127.0.0.1", 5555);
-        Log.d(TAG, diag);
+        appendLog(diag);
         
         // 然后再尝试连接
         adbConnection.connect("127.0.0.1", 5555, 5000);
