@@ -9,7 +9,6 @@ import android.util.Log;
 
 import com.android.apksig.ApkSigner;
 import com.android.apksig.ApkVerifier;
-import com.android.apksig.SigningCertificateLineage;
 
 import org.bouncycastle.cert.X509v3CertificateBuilder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
@@ -27,30 +26,19 @@ import java.util.*;
 
 import javax.security.auth.x500.X500Principal;
 
-/**
- * APK 重新签名工具类
- *
- * 基于 Google 官方 apksig 库，同时支持 V1（JAR签名）、V2、V3 签名。
- * 使用 BouncyCastle 生成自签名 X509 证书。
- * 密钥和证书持久化存储在 SharedPreferences 中。
- */
 public class ApkSignerUtil {
 
-    private static final String TAG = "ApkSigner";
+    private static final String TAG = "ApkSignerUtil";
 
-    // ==================== SharedPreferences 存储 key ====================
     private static final String PREFS_NAME = "apk_signer_keystore";
     private static final String KEY_PRIVATE_KEY = "private_key_pkcs8";
     private static final String KEY_CERTIFICATE = "certificate_x509";
 
-    // ==================== 签名常量 ====================
     private static final int CERT_VALIDITY_DAYS = 10950;
     private static final String CERT_DN =
             "CN=AutoSign, OU=Development, O=AutoSign, L=Unknown, ST=Unknown, C=CN";
     private static final String SIGNATURE_ALGORITHM = "SHA256withRSA";
     private static final int KEY_SIZE = 2048;
-
-    // ==================== 实例字段 ====================
 
     private final Context context;
     private final SharedPreferences keystorePrefs;
@@ -108,6 +96,7 @@ public class ApkSignerUtil {
             sb.append("序列号: ").append(cert.getSerialNumber().toString(16));
             return sb.toString();
         } catch (Exception e) {
+            Log.e(TAG, "getCertificateInfo error", e);
             return null;
         }
     }
@@ -122,23 +111,18 @@ public class ApkSignerUtil {
         log("已删除存储的签名证书");
     }
 
-    /**
-     * 对指定的 APK 执行重新签名（V1 + V2 + V3）
-     */
     public boolean resignApk(ContentResolver contentResolver, Uri apkUri, File outputFile) {
         log("========== 开始重新签名 APK (V1+V2+V3) ==========");
         log("源APK: " + apkUri);
         log("输出: " + outputFile.getAbsolutePath());
 
         try {
-            // Step 1: 获取或生成密钥对和证书
             log("加载签名证书...");
             KeyPair keyPair = getOrCreateKeyPair();
             X509Certificate cert = getOrCreateCertificate(keyPair);
             log("证书: " + cert.getSubjectDN().getName());
             log("有效期至: " + cert.getNotAfter());
 
-            // Step 2: 准备输出目录
             File parent = outputFile.getParentFile();
             if (parent != null && !parent.exists()) {
                 parent.mkdirs();
@@ -147,7 +131,6 @@ public class ApkSignerUtil {
                 outputFile.delete();
             }
 
-            // Step 3: 将 Uri 复制为临时文件
             log("读取原始APK...");
             File tempInput = copyUriToTempFile(contentResolver, apkUri);
             if (tempInput == null) {
@@ -155,24 +138,20 @@ public class ApkSignerUtil {
                 return false;
             }
             long inputSize = tempInput.length();
-            log("原始APK大小: " + inputSize + " bytes");
+            log("原始APK大小: " + inputSize + " bytes (" + (inputSize / 1024) + " KB)");
 
-            // Step 4: 执行签名
             log("执行 V1+V2+V3 签名...");
             signApkWithGoogleLib(tempInput, outputFile, keyPair.getPrivate(), cert);
 
-            // Step 5: 验证
             boolean success = outputFile.exists() && outputFile.length() > 0;
             if (success) {
                 log("========== 签名成功 ==========");
-                log("输出大小: " + outputFile.length() + " bytes");
-                // 可选：验证签名
+                log("输出大小: " + outputFile.length() + " bytes (" + (outputFile.length() / 1024) + " KB)");
                 verifySignature(outputFile);
             } else {
-                log("========== 签名失败 ==========");
+                log("========== 签名失败：输出文件为空或不存在 ==========");
             }
 
-            // 清理
             if (tempInput.exists()) tempInput.delete();
 
             return success;
@@ -199,12 +178,9 @@ public class ApkSignerUtil {
     }
 
     // ================================================================
-    //  使用 Google apksig 库签名
+    //  使用 Google apksig 库签名（新 API）
     // ================================================================
 
-    /**
-     * 使用 com.android.apksig.ApkSigner 进行 V1+V2+V3 签名
-     */
     private void signApkWithGoogleLib(File inputFile, File outputFile,
                                        PrivateKey privateKey, X509Certificate cert) throws Exception {
         ApkSigner.SignerConfig signerConfig = new ApkSigner.SignerConfig.Builder(
@@ -225,33 +201,19 @@ public class ApkSignerUtil {
         apkSigner.sign();
     }
 
-    /**
-     * 验证签名（可选）
-     */
     private void verifySignature(File apkFile) {
         try {
             ApkVerifier verifier = new ApkVerifier.Builder(apkFile).build();
             ApkVerifier.Result result = verifier.verify();
             if (result.isVerified()) {
-                log("签名验证: ✓ 通过");
-                if (result.isVerifiedUsingV1Scheme()) {
-                    log("  - V1 (JAR签名): ✓");
-                }
-                if (result.isVerifiedUsingV2Scheme()) {
-                    log("  - V2 (APK Signature Scheme v2): ✓");
-                }
-                if (result.isVerifiedUsingV3Scheme()) {
-                    log("  - V3 (APK Signature Scheme v3): ✓");
-                }
-                // 显示签名证书信息
-                for (ApkVerifier.Result.V1SchemeSignerInfo signer :
-                        result.getV1SchemeSigners()) {
-                    log("  V1签名者: " + signer.getName());
-                }
+                log("签名验证: 通过");
+                if (result.isVerifiedUsingV1Scheme()) log("  V1 (JAR签名): OK");
+                if (result.isVerifiedUsingV2Scheme()) log("  V2 (APK Signature v2): OK");
+                if (result.isVerifiedUsingV3Scheme()) log("  V3 (APK Signature v3): OK");
             } else {
-                log("签名验证: ✗ 失败");
+                log("签名验证: 失败");
                 for (ApkVerifier.IssueWithParams issue : result.getErrors()) {
-                    log("  错误: " + issue);
+                    log("  " + issue);
                 }
             }
         } catch (Exception e) {
@@ -266,9 +228,9 @@ public class ApkSignerUtil {
     private synchronized KeyPair getOrCreateKeyPair() throws Exception {
         PrivateKey pk = getOrLoadPrivateKey();
         if (pk != null) {
-            log("从存储加载现有私钥");
             X509Certificate cert = getOrLoadCertificate();
             if (cert != null) {
+                log("从存储加载现有密钥对");
                 return new KeyPair(cert.getPublicKey(), pk);
             }
         }
@@ -365,11 +327,11 @@ public class ApkSignerUtil {
         long now = System.currentTimeMillis();
 
         X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
-                new X500Principal(CERT_DN),                       // issuer
-                new BigInteger(64, new SecureRandom()),           // serial
-                new Date(now - 86400000L),                        // notBefore
-                new Date(now + CERT_VALIDITY_DAYS * 86400000L),   // notAfter
-                new X500Principal(CERT_DN),                       // subject
+                new X500Principal(CERT_DN),
+                new BigInteger(64, new SecureRandom()),
+                new Date(now - 86400000L),
+                new Date(now + CERT_VALIDITY_DAYS * 86400000L),
+                new X500Principal(CERT_DN),
                 keyPair.getPublic()
         );
 
@@ -428,19 +390,24 @@ public class ApkSignerUtil {
     }
 
     private File copyUriToTempFile(ContentResolver cr, Uri uri) throws IOException {
-        InputStream is = cr.openInputStream(uri);
-        if (is == null) throw new IOException("无法打开Uri: " + uri);
+        InputStream is = null;
+        try {
+            is = cr.openInputStream(uri);
+            if (is == null) throw new IOException("无法打开Uri: " + uri);
 
-        File tmp = File.createTempFile("apk_input_", ".apk", context.getCacheDir());
-        try (FileOutputStream fos = new FileOutputStream(tmp)) {
-            byte[] buf = new byte[8192];
-            int len;
-            while ((len = is.read(buf)) != -1) {
-                fos.write(buf, 0, len);
+            File tmp = File.createTempFile("apk_input_", ".apk", context.getCacheDir());
+            try (FileOutputStream fos = new FileOutputStream(tmp)) {
+                byte[] buf = new byte[8192];
+                int len;
+                while ((len = is.read(buf)) != -1) {
+                    fos.write(buf, 0, len);
+                }
             }
+            return tmp;
         } finally {
-            is.close();
+            if (is != null) {
+                try { is.close(); } catch (IOException ignored) {}
+            }
         }
-        return tmp;
     }
 }
