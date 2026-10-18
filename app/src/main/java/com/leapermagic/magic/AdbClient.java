@@ -12,6 +12,7 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;  // ← 新增
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
