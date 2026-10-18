@@ -921,7 +921,69 @@ public class MainActivity extends AppCompatActivity {
             adbConnection = null;
         }
     }
+
+    /**
+     * 从本地路径推送文件到设备
+     */
+    private void pushLocalFile(String ip, int port, String localPath, String remotePath) {
+        String tag = "PushFile";
+        appendLog(">>> 推送: " + localPath + " -> " + remotePath);
     
+        new Thread(() -> {
+            try {
+                // 1. 读取本地文件
+                File localFile = new File(localPath);
+                if (!localFile.exists()) {
+                    appendLog("✗ 本地文件不存在: " + localPath);
+                    toast("文件不存在");
+                    return;
+                }
+    
+                byte[] data = new byte[(int) localFile.length()];
+                try (FileInputStream fis = new FileInputStream(localFile)) {
+                    int read = fis.read(data);
+                    appendLog("读取本地: " + read + " bytes");
+                }
+    
+                // 2. 推送到设备
+                AdbClient.ShellResult pushResult = AdbClient.pushFile(
+                    ip, port, data, remotePath);
+    
+                if (pushResult.isSuccess()) {
+                    appendLog("✓ 推送成功");
+    
+                    // 3. 验证文件大小
+                    AdbClient.ShellResult lsResult = AdbClient.executeShellOneShot(
+                        ip, port,
+                        "ls -la " + AdbClient.escapeShellArg(remotePath));
+                    appendLog("文件信息: " + lsResult.stdout.trim());
+    
+                    // 4. 如果是APK，自动安装
+                    // if (remotePath.endsWith(".apk")) {
+                    //     appendLog(">>> 检测到APK，开始安装...");
+                    //     AdbClient.ShellResult installResult = AdbClient.installApk(
+                    //         ip, port, remotePath);
+                    //     appendLog("安装结果: " + installResult.exitCode);
+                    //     if (!installResult.stdout.isEmpty()) {
+                    //         appendLog("STDOUT:\n" + installResult.stdout.trim());
+                    //     }
+                    //     if (!installResult.stderr.isEmpty()) {
+                    //         appendLog("STDERR:\n" + installResult.stderr.trim());
+                    //     }
+                    // }
+    
+                    toast("推送成功");
+                } else {
+                    appendLog("✗ 推送失败: " + pushResult.stderr);
+                    toast("推送失败");
+                }
+    
+            } catch (Exception e) {
+                appendLog("✗ 异常: " + e.getMessage());
+                toast("异常: " + e.getMessage());
+            }
+        }).start();
+    }
 
     // ============================================================
     // 备选方案：直接在 Java 层通过反射绕过安装限制（需要系统权限）
