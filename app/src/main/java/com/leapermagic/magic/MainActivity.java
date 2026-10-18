@@ -74,7 +74,9 @@ public class MainActivity extends AppCompatActivity {
     private Button btnPrepareFiles;    // 按钮1：复制 dex + apk
     private Button btnExecuteInstall;  // 按钮2：执行安装
     private TextView tvStatus;
-
+    // 字段声明
+    private ApkSignerUtil apkSignerUtil;
+    
     // 记录最终成功的路径
     private String actualDexPath = null;
     private String actualApkPath = null;
@@ -248,7 +250,7 @@ public class MainActivity extends AppCompatActivity {
         tvStatus = findViewById(R.id.tv_status);
         
         // 初始化签名工具，设置日志回调
-        apkSigner = new ApkSigner(new ApkSigner.SignLogCallback() {
+        apkSignerUtil = new ApkSignerUtil(this, new ApkSignerUtil.SignLogCallback() {
             @Override
             public void onLog(String message) {
                 appendLog("[签名] " + message);
@@ -1032,7 +1034,7 @@ public class MainActivity extends AppCompatActivity {
         appendLog("========== 开始重新签名 APK ==========");
         new Thread(() -> {
             // 根据原始 APK Uri 生成输出文件路径
-            actualSignedApkFile = ApkSigner.generateOutputFile(selectedApkUri);
+            actualSignedApkFile = ApkSignerUtil.generateOutputFile(selectedApkUri);
             if (actualSignedApkFile == null) {
                 uiHandler.post(() -> {
                     tvStatus.setText("无法确定输出路径");
@@ -1043,7 +1045,7 @@ public class MainActivity extends AppCompatActivity {
             }
             appendLog("输出文件: " + actualSignedApkFile.getAbsolutePath());
             // 调用 ApkSigner 执行签名
-            boolean success = apkSigner.resignApk(
+            boolean success = apkSignerUtil.resignApk(
                     getContentResolver(),
                     selectedApkUri,
                     actualSignedApkFile
