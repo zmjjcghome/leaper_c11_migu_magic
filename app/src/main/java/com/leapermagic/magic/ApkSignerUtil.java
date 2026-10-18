@@ -1,4 +1,3 @@
-
 package com.leapermagic.magic;
 
 import android.content.ContentResolver;
@@ -52,6 +51,7 @@ public class ApkSignerUtil {
     private static final int CERT_VALIDITY_DAYS = 10950; // 30年
     private static final String CERT_CN = "AutoSign";
     private static final int KEY_SIZE = 2048;
+    // Android KeyStore GCM 默认 IV 长度通常为 12 字节
     private static final int AES_GCM_IV_LENGTH = 12;
     private static final int AES_GCM_TAG_LENGTH = 16;
 
@@ -150,7 +150,7 @@ public class ApkSignerUtil {
                     .setOutputApk(outputFile)
                     .setV1SigningEnabled(true)
                     .setV2SigningEnabled(true)
-                    .setV3SigningEnabled(false) // Android 9+ V2足够，V3可选
+                    .setV3SigningEnabled(false) 
                     .build();
 
             signer.sign();
@@ -203,36 +203,51 @@ public class ApkSignerUtil {
         }
     }
 
-    // AES-GCM 加密工具
+    // ==================== 修复后的 AES-GCM 加解密 ====================
+    
+    /**
+     * 加密：让 Android KeyStore 自动生成 IV
+     */
     private String aesGcmEncrypt(byte[] plainData) throws Exception {
         if (cachedAesKey == null) initAndroidKeyStoreAesKey();
+        
+        // 注意：初始化时不传入 GCMParameterSpec，让系统自动生成 IV
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        byte[] iv = new byte[AES_GCM_IV_LENGTH];
-        new SecureRandom().nextBytes(iv);
-        GCMParameterSpec spec = new GCMParameterSpec(AES_GCM_TAG_LENGTH * 8, iv);
-        cipher.init(Cipher.ENCRYPT_MODE, cachedAesKey, spec);
+        cipher.init(Cipher.ENCRYPT_MODE, cachedAesKey);
+        
+        // 获取系统自动生成的 IV
+        byte[] iv = cipher.getIV();
         byte[] encrypted = cipher.doFinal(plainData);
         
-        // IV + Ciphertext
+        // 组合 IV + 密文
         byte[] ivAndEncrypted = new byte[iv.length + encrypted.length];
         System.arraycopy(iv, 0, ivAndEncrypted, 0, iv.length);
         System.arraycopy(encrypted, 0, ivAndEncrypted, iv.length, encrypted.length);
+        
         return Base64.encodeToString(ivAndEncrypted, Base64.NO_WRAP);
     }
 
-    // AES-GCM 解密工具
+    /**
+     * 解密：从数据头部提取 IV
+     */
     private byte[] aesGcmDecrypt(String encryptedB64) throws Exception {
         if (cachedAesKey == null) initAndroidKeyStoreAesKey();
+        
         byte[] ivAndEncrypted = Base64.decode(encryptedB64, Base64.NO_WRAP);
         if (ivAndEncrypted.length < AES_GCM_IV_LENGTH) {
             throw new IllegalArgumentException("Invalid encrypted data length");
         }
+        
+        // 提取 IV
         byte[] iv = Arrays.copyOfRange(ivAndEncrypted, 0, AES_GCM_IV_LENGTH);
+        // 提取密文
         byte[] ciphertext = Arrays.copyOfRange(ivAndEncrypted, AES_GCM_IV_LENGTH, ivAndEncrypted.length);
 
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        // 解密时必须传入 IV
         GCMParameterSpec spec = new GCMParameterSpec(AES_GCM_TAG_LENGTH * 8, iv);
         cipher.init(Cipher.DECRYPT_MODE, cachedAesKey, spec);
+        
         return cipher.doFinal(ciphertext);
     }
 
@@ -367,7 +382,6 @@ public class ApkSignerUtil {
         );
 
         // 4. 使用私钥对证书进行签名
-        // SHA256withRSA 是 Android APK 签名的标准且安全的算法
         JcaContentSignerBuilder signerBuilder = new JcaContentSignerBuilder("SHA256withRSA");
         signerBuilder.setProvider(BouncyCastleProvider.PROVIDER_NAME); 
         
