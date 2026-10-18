@@ -72,6 +72,7 @@
             android:layout_marginTop="1dp"
             android:text="状态：待机"
             android:textColor="#000"
+            android:textIsSelectable="true"
             android:textSize="14sp" />
     </ScrollView>
     
@@ -89,6 +90,7 @@
             android:layout_marginTop="1dp"
             android:layout_marginBottom="1dp"
             android:typeface="monospace"
+            android:textIsSelectable="true"
             android:text="" />
 
     </ScrollView>
