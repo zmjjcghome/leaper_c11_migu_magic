@@ -12,7 +12,7 @@
     android:layout_marginTop="16dp">
 
         <TextView
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="第一步：选择 APK 文件"
             android:textSize="16sp"
