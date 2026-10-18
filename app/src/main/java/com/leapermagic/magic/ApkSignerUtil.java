@@ -417,7 +417,7 @@ public class ApkSignerUtil {
         Class<?> validityClass= Class.forName("sun.security.x509.CertificateValidity");
         Class<?> serialClass  = Class.forName("sun.security.x509.CertificateSerialNumber");
         Class<?> issuerNameClass = Class.forName("sun.security.x509.CertificateIssuerName");
-        Class<?>> subNameClass= Class.forName("sun.security.x509.CertificateSubjectName");
+        Class<?> subNameClass= Class.forName("sun.security.x509.CertificateSubjectName");
         Class<?> signerClass  = Class.forName("sun.security.x509.X509CertImpl");
 
         long now = System.currentTimeMillis();
