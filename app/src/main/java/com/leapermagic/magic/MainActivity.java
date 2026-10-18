@@ -107,7 +107,7 @@ public class MainActivity extends AppCompatActivity {
         // Manifest.permission.REQUEST_INSTALL_PACKAGES,
         
         // 设备信息
-        Manifest.permission.READ_PHONE_STATE,
+        //Manifest.permission.READ_PHONE_STATE,
     };
     
     /**
