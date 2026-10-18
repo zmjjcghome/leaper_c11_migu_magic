@@ -183,6 +183,21 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
             });
+    // ============================================================
+    // 设置日志监听（将AdbClient日志输出到UI）
+    // ============================================================
+    private void setupLogListener() {
+        AdbClient.setLogListener(new AdbClient.LogListener() {
+            @Override
+            public void onLog(AdbClient.LogLevel level, String tag, String message) {
+                String formattedMsg = String.format("[%s] %s: %s", level.tag, tag, message);
+                appendLog(formattedMsg);
+            }
+        });
+        
+        appendLog("ADB客户端已就绪");
+        appendLog("日志系统初始化完成");
+    }
     
     /**
      * 示例1：端口检查
@@ -300,6 +315,7 @@ public class MainActivity extends AppCompatActivity {
 
         checkPermissions();
         checkAllPermissions();
+        setupLogListener();
         
         checkPort("127.0.0.1", 5555);
         connectToDevice("127.0.0.1", 5555);
