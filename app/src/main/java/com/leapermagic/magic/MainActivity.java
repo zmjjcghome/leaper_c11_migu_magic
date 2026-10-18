@@ -553,7 +553,7 @@ public class MainActivity extends AppCompatActivity {
         appendLog("=== 端口诊断: ");
         appendLog(host);
         appendLog(":");
-        appendLog(port);
+        appendLog(""+port);
         appendLog(" ===\n");
         
         try {
@@ -581,7 +581,7 @@ public class MainActivity extends AppCompatActivity {
                 int read = in.read(buf);
                 if (read > 0) {
                     String hex = bytesToHex(buf, read);
-                    appendLog(hex).append("\n");
+                    appendLog(hex);
                     
                     // 判断协议
                     if (hex.startsWith("4F50454E") || hex.startsWith("4E584E43")) {
