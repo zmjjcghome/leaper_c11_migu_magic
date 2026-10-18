@@ -246,7 +246,18 @@ public class MainActivity extends AppCompatActivity {
         btnPrepareFiles = findViewById(R.id.btn_prepare_files);
         btnExecuteInstall = findViewById(R.id.btn_execute_install);
         tvStatus = findViewById(R.id.tv_status);
-
+        
+        // 初始化签名工具，设置日志回调
+        apkSigner = new ApkSigner(new ApkSigner.SignLogCallback() {
+            @Override
+            public void onLog(String message) {
+                appendLog("[签名] " + message);
+            }
+        });
+        // 初始状态：重签名相关按钮不可用
+        btnResignApk.setEnabled(false);
+        btnInstallResigned.setEnabled(false);
+        
         // 初始状态：安装按钮不可用
         btnExecuteInstall.setEnabled(false);
 
@@ -278,8 +289,11 @@ public class MainActivity extends AppCompatActivity {
                         // 重新选择 APK 后需要重新准备文件
                         actualDexPath = null;
                         actualApkPath = null;
+                        actualSignedApkFile = null;
                         btnExecuteInstall.setEnabled(false);
-                        appendLog("已选择 APK，请点击'准备文件'");
+                        btnResignApk.setEnabled(true);
+                        btnInstallResigned.setEnabled(false);
+                        appendLog("已选择 APK，可以进行重新签名或准备绕过安装");
                     }
                 });
 
@@ -313,7 +327,11 @@ public class MainActivity extends AppCompatActivity {
 
         // ====== 按钮2：执行安装 ======
         btnExecuteInstall.setOnClickListener(v -> executeInstall());
-
+        // ====== 按钮3：重新签名 ======
+        btnResignApk.setOnClickListener(v -> resignSelectedApk());
+        // ====== 按钮4：安装重签名后的APK ======
+        btnInstallResigned.setOnClickListener(v -> installResignedApk());
+        
         checkPermissions();
         checkAllPermissions();
         setupLogListener();
@@ -998,6 +1016,85 @@ public class MainActivity extends AppCompatActivity {
                     Toast.makeText(MainActivity.this, ">>> 推送: 异常: " + e.getMessage(), Toast.LENGTH_LONG).show();
                 });
             }
+        }).start();
+    }
+    
+    // ============================================================
+    // 按钮3：重新对APK签名（使用 ApkSigner 类）
+    // ============================================================
+    private void resignSelectedApk() {
+        if (selectedApkUri == null) {
+            Toast.makeText(this, "请先选择要签名的 APK", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        btnResignApk.setEnabled(false);
+        tvStatus.setText("正在重新签名...");
+        appendLog("========== 开始重新签名 APK ==========");
+        new Thread(() -> {
+            // 根据原始 APK Uri 生成输出文件路径
+            actualSignedApkFile = ApkSigner.generateOutputFile(selectedApkUri);
+            if (actualSignedApkFile == null) {
+                uiHandler.post(() -> {
+                    tvStatus.setText("无法确定输出路径");
+                    btnResignApk.setEnabled(true);
+                    Toast.makeText(MainActivity.this, "无法确定输出路径", Toast.LENGTH_SHORT).show();
+                });
+                return;
+            }
+            appendLog("输出文件: " + actualSignedApkFile.getAbsolutePath());
+            // 调用 ApkSigner 执行签名
+            boolean success = apkSigner.resignApk(
+                    getContentResolver(),
+                    selectedApkUri,
+                    actualSignedApkFile
+            );
+            uiHandler.post(() -> {
+                if (success) {
+                    tvStatus.setText("签名完成 → " + actualSignedApkFile.getAbsolutePath());
+                    btnResignApk.setEnabled(true);
+                    btnInstallResigned.setEnabled(true);
+                    Toast.makeText(MainActivity.this,
+                            "APK重新签名完成:\n" + actualSignedApkFile.getName(),
+                            Toast.LENGTH_LONG).show();
+                } else {
+                    tvStatus.setText("签名失败，查看日志");
+                    btnResignApk.setEnabled(true);
+                    Toast.makeText(MainActivity.this, "签名失败", Toast.LENGTH_SHORT).show();
+                }
+            });
+        }).start();
+    }
+    // ============================================================
+    // 按钮4：安装重签名后的APK
+    // ============================================================
+    private void installResignedApk() {
+        if (actualSignedApkFile == null || !actualSignedApkFile.exists()) {
+            Toast.makeText(this, "请先对APK重新签名", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        btnInstallResigned.setEnabled(false);
+        tvStatus.setText("正在安装重签名后的APK...");
+        appendLog("========== 开始安装重签名APK ==========");
+        appendLog("APK路径: " + actualSignedApkFile.getAbsolutePath());
+        new Thread(() -> {
+            // 确保DEX文件存在
+            if (actualDexPath == null) {
+                actualDexPath = pushDexWithFallback();
+                if (actualDexPath == null) {
+                    uiHandler.post(() -> {
+                        tvStatus.setText("DEX准备失败");
+                        btnInstallResigned.setEnabled(true);
+                        Toast.makeText(MainActivity.this, "DEX文件准备失败", Toast.LENGTH_SHORT).show();
+                    });
+                    return;
+                }
+            }
+            String result = executeShellInstall(actualDexPath, actualSignedApkFile.getAbsolutePath());
+            uiHandler.post(() -> {
+                tvStatus.setText("安装结果: " + result);
+                btnInstallResigned.setEnabled(true);
+                Toast.makeText(MainActivity.this, "安装完成: " + result, Toast.LENGTH_LONG).show();
+            });
         }).start();
     }
 
