@@ -250,6 +250,8 @@ public class MainActivity extends AppCompatActivity {
         btnToggleMonitor = findViewById(R.id.btn_toggle_monitor);
         btnPrepareFiles = findViewById(R.id.btn_prepare_files);
         btnExecuteInstall = findViewById(R.id.btn_execute_install);
+        btnResignApk = findViewById(R.id.btn_resign_apk);
+        // btnInstallResigned = findViewById(R.id.btn_install_resigned);
         tvStatus = findViewById(R.id.tv_status);
         
         // 初始状态：重签名相关按钮不可用
@@ -326,7 +328,7 @@ public class MainActivity extends AppCompatActivity {
         // ====== 按钮2：执行安装 ======
         btnExecuteInstall.setOnClickListener(v -> executeInstall());
         // ====== 按钮3：重新签名 ======
-        // btnResignApk.setOnClickListener(v -> resignSelectedApk());
+        btnResignApk.setOnClickListener(v -> resignSelectedApk());
         // ====== 按钮4：安装重签名后的APK ======
         // btnInstallResigned.setOnClickListener(v -> installResignedApk());
         
@@ -337,6 +339,15 @@ public class MainActivity extends AppCompatActivity {
         //         appendLog("[签名] " + message);
         //     }
         // });
+        apkSignerUtil = new ApkSignerUtil(this);
+        apkSignerUtil.setLogCallback(new ApkSignerUtil.SignLogCallback() {
+            @Override
+            public void onLog(final String message) {
+                runOnUiThread(() -> {
+                    appendLog("[签名] " + message);
+                });
+            }
+        });
         checkPermissions();
         checkAllPermissions();
         setupLogListener();
@@ -1036,17 +1047,6 @@ public class MainActivity extends AppCompatActivity {
         tvStatus.setText("正在重新签名...");
         appendLog("========== 开始重新签名 APK ==========");
         new Thread(() -> {
-            if (apkSignerUtil == null) {
-                apkSignerUtil = new ApkSignerUtil(this);
-                apkSignerUtil.setLogCallback(new ApkSignerUtil.SignLogCallback() {
-                    @Override
-                    public void onLog(final String message) {
-                        runOnUiThread(() -> {
-                            appendLog("[签名] " + message);
-                        });
-                    }
-                });
-            }
             // 根据原始 APK Uri 生成输出文件路径
             actualSignedApkFile = ApkSignerUtil.generateOutputFile(selectedApkUri);
             if (actualSignedApkFile == null) {
