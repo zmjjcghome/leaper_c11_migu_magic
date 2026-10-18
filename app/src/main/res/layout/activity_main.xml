@@ -26,6 +26,12 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="选择 APK 文件" />
+        <Button
+            android:id="@+id/btn_resign_apk"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="重新签名APK"/>
     
     </LinearLayout>
 
