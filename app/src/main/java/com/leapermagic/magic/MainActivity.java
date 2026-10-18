@@ -550,21 +550,29 @@ public class MainActivity extends AppCompatActivity {
      */
     private String diagnosePort(String host, int port) {
         StringBuilder report = new StringBuilder();
-        report.append("=== 端口诊断: ").append(host).append(":").append(port).append(" ===\n");
+        appendLog("=== 端口诊断: ");
+        appendLog(host);
+        appendLog(":");
+        appendLog(port);
+        appendLog(" ===\n");
         
         try {
             // 1. 检查这个端口属于哪个进程
             String procInfo = execSh("netstat -tlnp 2>/dev/null | grep :" + port);
             if (procInfo != null && !procInfo.isEmpty()) {
-                report.append("[进程] ").append(procInfo).append("\n");
+                appendLog("[进程] ");
+                appendLog(procInfo);
+                appendLog("\n");
             } else {
                 // 尝试 ss 命令
                 procInfo = execSh("ss -tlnp 2>/dev/null | grep :" + port);
-                report.append("[进程] ").append(procInfo != null ? procInfo : "未知").append("\n");
+                appendLog("[进程] ");
+                appendLog(procInfo != null ? procInfo : "未知");
+                appendLog("\n");
             }
             
             // 2. 直接读取前几个字节，看是什么协议
-            report.append("[原始数据] ");
+            appendLog("[原始数据] ");
             try (Socket s = new Socket()) {
                 s.connect(new InetSocketAddress(host, port), 2000);
                 s.setSoTimeout(2000);
@@ -573,25 +581,25 @@ public class MainActivity extends AppCompatActivity {
                 int read = in.read(buf);
                 if (read > 0) {
                     String hex = bytesToHex(buf, read);
-                    report.append(hex).append("\n");
+                    appendLog(hex).append("\n");
                     
                     // 判断协议
                     if (hex.startsWith("4F50454E") || hex.startsWith("4E584E43")) {
-                        report.append("[判断] 这是 ADB 协议!\n");
+                        appendLog("[判断] 这是 ADB 协议!\n");
                     } else if (hex.contains("535348")) {
-                        report.append("[判断] 这是 SSH 协议\n");
+                        appendLog("[判断] 这是 SSH 协议\n");
                     } else if (hex.contains("48545450")) {
-                        report.append("[判断] 这是 HTTP 协议\n");
+                        appendLog("[判断] 这是 HTTP 协议\n");
                     } else {
-                        report.append("[判断] 未知协议\n");
+                        appendLog("[判断] 未知协议\n");
                     }
                 } else {
-                    report.append("无响应数据 (服务可能等待客户端先发数据)\n");
+                    appendLog("无响应数据 (服务可能等待客户端先发数据)\n");
                 }
             }
             
             // 3. 尝试发送 ADB CNXN 并看响应
-            report.append("[主动探测] 发送 ADB CNXN...\n");
+            appendLog("[主动探测] 发送 ADB CNXN...\n");
             try (Socket s2 = new Socket()) {
                 s2.connect(new InetSocketAddress(host, port), 2000);
                 s2.setSoTimeout(3000);
@@ -606,14 +614,18 @@ public class MainActivity extends AppCompatActivity {
                 byte[] resp = new byte[64];
                 int r = in2.read(resp);
                 if (r > 0) {
-                    report.append("[响应] ").append(bytesToHex(resp, r)).append("\n");
+                    appendLog("[响应] ");
+                    appendLog(bytesToHex(resp, r));
+                    appendLog("\n");
                 } else {
-                    report.append("[响应] 无 (超时/EOF)\n");
+                    appendLog("[响应] 无 (超时/EOF)\n");
                 }
             }
             
         } catch (Exception e) {
-            report.append("[错误] ").append(e.getMessage()).append("\n");
+            appendLog("[错误] ");
+            appendLog(e.getMessage());
+            appendLog("\n");
         }
         
         return report.toString();
