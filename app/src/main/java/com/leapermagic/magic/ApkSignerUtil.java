@@ -22,7 +22,7 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.RSAPrivateKeySpec;
 import java.security.spec.RSAPublicKeySpec;
 import java.util.*;
-
+import android.content.SharedPreferences;
 import javax.security.auth.x500.X500Principal;
 
 public class ApkSignerUtil {
@@ -77,7 +77,8 @@ public class ApkSignerUtil {
 
     public String getCertificateInfo() {
         try {
-            X509Certificate cert = getOrLoadCertificate();
+            // X509Certificate cert = getOrLoadCertificate();
+            X509Certificate cert = loadCertificate();
             if (cert == null) return null;
             return "Subject: " + cert.getSubjectDN().getName()
                     + "\n有效期至: " + cert.getNotAfter()
