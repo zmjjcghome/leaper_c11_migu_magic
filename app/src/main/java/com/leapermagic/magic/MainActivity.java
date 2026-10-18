@@ -441,6 +441,13 @@ public class MainActivity extends AppCompatActivity {
     
         String cmd = "export CLASSPATH=" + dexPath + " && " +
                      "app_process /system/framework " + INSTALLER_CLASS + " " + apkPath;
+        // 对目标端口做诊断
+        String diag = diagnosePort("127.0.0.1", 5555);
+        Log.d(TAG, diag);
+        
+        // 然后再尝试连接
+        adbConnection.connect("127.0.0.1", 5555, 5000);
+                
         if (adbConnection == null ) {
             appendLog("========== 开始初始化adb ==========");
             initAdbConnection();
@@ -529,7 +536,118 @@ public class MainActivity extends AppCompatActivity {
             adbConnection = null;
         }
     }
-
+    
+    /**
+     * 诊断工具：探测目标端口到底是什么服务
+     */
+    private String diagnosePort(String host, int port) {
+        StringBuilder report = new StringBuilder();
+        report.append("=== 端口诊断: ").append(host).append(":").append(port).append(" ===\n");
+        
+        try {
+            // 1. 检查这个端口属于哪个进程
+            String procInfo = execSh("netstat -tlnp 2>/dev/null | grep :" + port);
+            if (procInfo != null && !procInfo.isEmpty()) {
+                report.append("[进程] ").append(procInfo).append("\n");
+            } else {
+                // 尝试 ss 命令
+                procInfo = execSh("ss -tlnp 2>/dev/null | grep :" + port);
+                report.append("[进程] ").append(procInfo != null ? procInfo : "未知").append("\n");
+            }
+            
+            // 2. 直接读取前几个字节，看是什么协议
+            report.append("[原始数据] ");
+            try (Socket s = new Socket()) {
+                s.connect(new InetSocketAddress(host, port), 2000);
+                s.setSoTimeout(2000);
+                InputStream in = s.getInputStream();
+                byte[] buf = new byte[64];
+                int read = in.read(buf);
+                if (read > 0) {
+                    String hex = bytesToHex(buf, read);
+                    report.append(hex).append("\n");
+                    
+                    // 判断协议
+                    if (hex.startsWith("4F50454E") || hex.startsWith("4E584E43")) {
+                        report.append("[判断] 这是 ADB 协议!\n");
+                    } else if (hex.contains("535348")) {
+                        report.append("[判断] 这是 SSH 协议\n");
+                    } else if (hex.contains("48545450")) {
+                        report.append("[判断] 这是 HTTP 协议\n");
+                    } else {
+                        report.append("[判断] 未知协议\n");
+                    }
+                } else {
+                    report.append("无响应数据 (服务可能等待客户端先发数据)\n");
+                }
+            }
+            
+            // 3. 尝试发送 ADB CNXN 并看响应
+            report.append("[主动探测] 发送 ADB CNXN...\n");
+            try (Socket s2 = new Socket()) {
+                s2.connect(new InetSocketAddress(host, port), 2000);
+                s2.setSoTimeout(3000);
+                OutputStream out = s2.getOutputStream();
+                InputStream in2 = s2.getInputStream();
+                
+                // 发送标准 CNXN
+                byte[] cnxn = buildCnxnMessage();
+                out.write(cnxn);
+                out.flush();
+                
+                byte[] resp = new byte[64];
+                int r = in2.read(resp);
+                if (r > 0) {
+                    report.append("[响应] ").append(bytesToHex(resp, r)).append("\n");
+                } else {
+                    report.append("[响应] 无 (超时/EOF)\n");
+                }
+            }
+            
+        } catch (Exception e) {
+            report.append("[错误] ").append(e.getMessage()).append("\n");
+        }
+        
+        return report.toString();
+    }
+    
+    private byte[] buildCnxnMessage() {
+        java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(30)
+            .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        bb.putInt(0x4e584e43);  // A_CNXN
+        bb.putInt(0x01000000);  // version
+        bb.putInt(256 * 1024);  // max payload
+        bb.putInt(6);           // "host::" length
+        bb.putInt(0);           // magic
+        bb.putInt(0);           // padding
+        bb.put("host::".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return bb.array();
+    }
+    
+    private String bytesToHex(byte[] bytes, int len) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < len; i++) {
+            sb.append(String.format("%02X", bytes[i] & 0xFF));
+        }
+        return sb.toString();
+    }
+    
+    private String execSh(String cmd) {
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"sh", "-c", cmd});
+            java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.InputStreamReader(p.getInputStream()));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = r.readLine()) != null) {
+                sb.append(line).append("\n");
+            }
+            p.waitFor();
+            return sb.toString().trim();
+        } catch (Exception e) {
+            return null;
+        }
+    }
 
 
     // ============================================================
