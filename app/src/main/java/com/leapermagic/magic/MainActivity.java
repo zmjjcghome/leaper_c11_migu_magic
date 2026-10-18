@@ -1,6 +1,8 @@
 package com.leapermagic.magic;
 
 import android.content.Intent;
+import android.content.Context;
+import android.content.pm.PackageManager;
 import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
@@ -20,17 +22,17 @@ import android.Manifest;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+import androidx.appcompat.app.AlertDialog;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.OutputStream;
-import java.io.IOException;
 import java.net.Socket;
 import java.net.InetSocketAddress;
+import java.io.*;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.*;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -121,6 +123,67 @@ public class MainActivity extends AppCompatActivity {
     private static final String[] ANDROID_13_PERMISSIONS = {
         Manifest.permission.POST_NOTIFICATIONS,
     };
+    // ==================== ActivityResult启动器 ====================
+    
+    /**
+     * 常规权限请求启动器
+     */
+    private final ActivityResultLauncher<String[]> permissionLauncher = 
+        registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), 
+            result -> {
+                List<String> deniedPermissions = new ArrayList<>();
+                for (Map.Entry<String, Boolean> entry : result.entrySet()) {
+                    if (!entry.getValue()) {
+                        deniedPermissions.add(entry.getKey());
+                    }
+                }
+                
+                if (deniedPermissions.isEmpty()) {
+                    appendLog("✅ 所有权限已授予");
+                    onPermissionsGranted();
+                } else {
+                    appendLog("⚠️ 部分权限被拒绝: " + deniedPermissions.size() + "项");
+                    // 对关键权限被拒绝给出提示
+                    if (deniedPermissions.contains(Manifest.permission.INTERNET)) {
+                        showPermissionDialog("网络权限被拒绝，ADB通信功能将无法使用");
+                    }
+                    if (deniedPermissions.contains(Manifest.permission.REQUEST_INSTALL_PACKAGES)) {
+                        showPermissionDialog("安装权限被拒绝，无法安装APK");
+                    }
+                }
+            });
+    
+    /**
+     * 安装未知来源应用权限启动器
+     */
+    private final ActivityResultLauncher<Intent> installPermissionLauncher = 
+        registerForActivityResult(new ActivityResultContracts.StartActivityForResult(),
+            result -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    if (getPackageManager().canRequestPackageInstalls()) {
+                        appendLog("✅ 安装未知应用权限已授予");
+                    } else {
+                        appendLog("⚠️ 安装未知应用权限未授予");
+                        showPermissionDialog("需要安装未知应用权限才能安装APK");
+                    }
+                }
+            });
+    
+    /**
+     * 管理所有文件权限启动器（Android 11+）
+     */
+    private final ActivityResultLauncher<Intent> manageFilesPermissionLauncher = 
+        registerForActivityResult(new ActivityResultContracts.StartActivityForResult(),
+            result -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    if (Environment.isExternalStorageManager()) {
+                        appendLog("✅ 管理所有文件权限已授予");
+                    } else {
+                        appendLog("⚠️ 管理所有文件权限未授予");
+                    }
+                }
+            });
+    
     /**
      * 示例1：端口检查
      */
