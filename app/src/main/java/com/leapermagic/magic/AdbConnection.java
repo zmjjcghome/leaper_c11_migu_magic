@@ -101,7 +101,17 @@ public class AdbConnection implements Closeable {
         }
         throw new IOException("连接失败（已重试 " + maxRetries + " 次）", lastError);
     }
-
+    /**
+     * 检测 adbd 是否在指定端口监听
+     */
+    public static boolean isAdbdListening(String host, int port) {
+        try (Socket s = new Socket()) {
+            s.connect(new java.net.InetSocketAddress(host, port), 500);
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
+    }
     private void doConnect(String host, int port, int attempt) throws IOException {
         log("连接 " + host + ":" + port + " (尝试 " + attempt + ")");
 
