@@ -535,9 +535,9 @@ public class MainActivity extends AppCompatActivity {
      */
     private void closeAdbConnection() {
         if (adbConnection != null) {
-            //try {
+            try {
                 adbConnection.close();
-            //} catch (IOException ignored) {}
+            } catch (IOException ignored) {}
             adbConnection = null;
         }
     }
