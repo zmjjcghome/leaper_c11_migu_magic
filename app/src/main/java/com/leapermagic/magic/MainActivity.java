@@ -73,6 +73,8 @@ public class MainActivity extends AppCompatActivity {
     private Button btnToggleMonitor;
     private Button btnPrepareFiles;    // 按钮1：复制 dex + apk
     private Button btnExecuteInstall;  // 按钮2：执行安装
+    private Button btnResignApk;       // 按钮3：重新签名
+    // private Button btnInstallResigned; // 按钮4：安装重签名后的APK
     private TextView tvStatus;
     // 字段声明
     private ApkSignerUtil apkSignerUtil;
@@ -258,7 +260,7 @@ public class MainActivity extends AppCompatActivity {
         });
         // 初始状态：重签名相关按钮不可用
         btnResignApk.setEnabled(false);
-        btnInstallResigned.setEnabled(false);
+        // btnInstallResigned.setEnabled(false);
         
         // 初始状态：安装按钮不可用
         btnExecuteInstall.setEnabled(false);
@@ -294,7 +296,7 @@ public class MainActivity extends AppCompatActivity {
                         actualSignedApkFile = null;
                         btnExecuteInstall.setEnabled(false);
                         btnResignApk.setEnabled(true);
-                        btnInstallResigned.setEnabled(false);
+                        // btnInstallResigned.setEnabled(false);
                         appendLog("已选择 APK，可以进行重新签名或准备绕过安装");
                     }
                 });
@@ -332,7 +334,7 @@ public class MainActivity extends AppCompatActivity {
         // ====== 按钮3：重新签名 ======
         btnResignApk.setOnClickListener(v -> resignSelectedApk());
         // ====== 按钮4：安装重签名后的APK ======
-        btnInstallResigned.setOnClickListener(v -> installResignedApk());
+        // btnInstallResigned.setOnClickListener(v -> installResignedApk());
         
         checkPermissions();
         checkAllPermissions();
@@ -1053,11 +1055,13 @@ public class MainActivity extends AppCompatActivity {
             uiHandler.post(() -> {
                 if (success) {
                     tvStatus.setText("签名完成 → " + actualSignedApkFile.getAbsolutePath());
+                    tvSelectedApk.setText("已选择: " + actualSignedApkFile.getAbsolutePath());
                     btnResignApk.setEnabled(true);
-                    btnInstallResigned.setEnabled(true);
+                    // btnInstallResigned.setEnabled(true);
                     Toast.makeText(MainActivity.this,
-                            "APK重新签名完成:\n" + actualSignedApkFile.getName(),
+                            "APK重新签名完成:\n" + actualSignedApkFile.getName() + ";已经重新选择为重签名的apk文件，可重新进行监控或者安装！",
                             Toast.LENGTH_LONG).show();
+                    appendLog("APK重新签名完成:\n" + actualSignedApkFile.getName() + ";已经重新选择为重签名的apk文件，可重新进行监控或者安装！");
                 } else {
                     tvStatus.setText("签名失败，查看日志");
                     btnResignApk.setEnabled(true);
@@ -1069,6 +1073,7 @@ public class MainActivity extends AppCompatActivity {
     // ============================================================
     // 按钮4：安装重签名后的APK
     // ============================================================
+    /***
     private void installResignedApk() {
         if (actualSignedApkFile == null || !actualSignedApkFile.exists()) {
             Toast.makeText(this, "请先对APK重新签名", Toast.LENGTH_SHORT).show();
@@ -1099,6 +1104,7 @@ public class MainActivity extends AppCompatActivity {
             });
         }).start();
     }
+    */
 
     // ============================================================
     // 备选方案：直接在 Java 层通过反射绕过安装限制（需要系统权限）
