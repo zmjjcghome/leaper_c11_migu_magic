@@ -6,6 +6,13 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 
+import android.util.Log;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 /**
  * 完整的 ADB 协议直连 adbd 实现
  * 通过 TCP Socket 连接到 127.0.0.1:PORT 上的 adbd，
@@ -27,126 +34,196 @@ import java.nio.charset.StandardCharsets;
  */
 public class AdbConnection implements Closeable {
 
+    private static final String TAG = "AdbConnection";
+
     private Socket socket;
     private OutputStream out;
     private InputStream in;
-    private int localId = 1; // 本地连接 ID 计数器
+    private int localId = 1;
 
-    // ADB 协议常量
-    private static final int A_SYNC  = 0x434e5953;
-    private static final int A_CNXN  = 0x4e584e43;
-    private static final int A_OPEN  = 0x4e45504f;
-    private static final int A_OKAY  = 0x59414b4f;
-    private static final int A_CLSE  = 0x45534c43;
-    private static final int A_WRTE  = 0x45545257;
-    private static final int A_AUTH  = 0x48545541;
+    // ========== ADB 协议常量 ==========
+    private static final int A_CNXN = 0x4e584e43;
+    private static final int A_OPEN = 0x4e45504f;
+    private static final int A_OKAY = 0x59414b4f;
+    private static final int A_CLSE = 0x45534c43;
+    private static final int A_WRTE = 0x45545257;
+    private static final int A_AUTH = 0x48545541;
 
     private static final int VERSION = 0x01000000;
     private static final int MAX_PAYLOAD = 256 * 1024;
 
-    /**
-     * 连接到 adbd
-     * @param host 通常为 "127.0.0.1" 或 "localhost"
-     * @param port adbd 的 TCP 监听端口
-     * @param timeout 连接超时 (毫秒)
-     */
-    public void connect(String host, int port, int timeout) throws IOException {
-        socket = new Socket();
-        socket.setTcpNoDelay(true);
-        socket.connect(new java.net.InetSocketAddress(host, port), timeout);
-        socket.setSoTimeout(timeout);
-        out = socket.getOutputStream();
-        in  = socket.getInputStream();
+    // ========== 超时配置 ==========
+    private int connectTimeout = 3000;   // 连接超时 3 秒
+    private int readTimeout = 5000;      // 读取超时 5 秒
+    private int maxRetries = 2;          // 握手失败重试次数
 
-        // ADB 握手: 发送 CNXN 消息
-        sendConnect();
+    private DebugCallback debugCallback;
+
+    public interface DebugCallback {
+        void onLog(String msg);
     }
 
-    /**
-     * 发送 ADB CNXN (连接) 消息
-     */
-    private void sendConnect() throws IOException {
-        // payload: "host::\0" — 表示主机连接
-        String systemType = "host::";
-        byte[] payload = systemType.getBytes(StandardCharsets.UTF_8);
+    public void setDebugCallback(DebugCallback callback) {
+        this.debugCallback = callback;
+    }
 
-        // 写入 ADB 消息头 + CNXN 特有的 8 字节
-        ByteBuffer bb = ByteBuffer.allocate(24 + payload.length).order(ByteOrder.LITTLE_ENDIAN);
-        bb.putInt(A_CNXN);          // command
-        bb.putInt(VERSION);         // arg0 = version
-        bb.putInt(MAX_PAYLOAD);     // arg1 = max payload
-        bb.putInt(payload.length);  // payload length
-        bb.putInt(0);               // magic (crc32 of payload, 可填0)
-        bb.putInt(0);               // padding
-        bb.put(payload);
-
-        out.write(bb.array());
-        out.flush();
-
-        // 读取响应
-        AdbMessage resp = readMessage();
-        if (resp == null || resp.command != A_CNXN) {
-            throw new IOException("ADB 握手失败: 未收到 CNXN 响应");
+    private void log(String msg) {
+        Log.d(TAG, msg);
+        if (debugCallback != null) {
+            debugCallback.onLog("[ADB] " + msg);
         }
     }
 
-    /**
-     * 执行 shell 命令 (核心方法)
-     *
-     * ADB shell 流程:
-     *   1. OPEN (id, 0, "shell:command\0")
-     *   2. 等待 OKAY
-     *   3. 读取 WRTE 消息获取输出
-     *   4. 收到 CLSE 表示结束
-     *
-     * @param command 要执行的命令
-     * @return 命令的输出结果
-     */
+    // ============================================
+    // 连接（带重试 + 多种协议变体）
+    // ============================================
+
+    public void connect(String host, int port, int timeout) throws IOException {
+        this.connectTimeout = timeout;
+        IOException lastError = null;
+
+        for (int attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                if (attempt > 0) {
+                    log("重试第 " + attempt + " 次...");
+                    Thread.sleep(500);
+                }
+                doConnect(host, port, attempt);
+                return;  // 成功
+            } catch (IOException e) {
+                lastError = e;
+                log("第 " + attempt + " 次尝试失败: " + e.getMessage());
+                close();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("连接被中断", e);
+            }
+        }
+        throw new IOException("连接失败（已重试 " + maxRetries + " 次）", lastError);
+    }
+
+    private void doConnect(String host, int port, int attempt) throws IOException {
+        log("连接 " + host + ":" + port + " (尝试 " + attempt + ")");
+
+        socket = new Socket();
+        socket.setTcpNoDelay(true);
+        socket.connect(new InetSocketAddress(host, port), connectTimeout);
+        socket.setSoTimeout(readTimeout);
+
+        out = socket.getOutputStream();
+        in = socket.getInputStream();
+
+        log("TCP 已连接，开始 ADB 握手...");
+
+        // ====== 发送 CNXN ======
+        byte[] cnxnPayload = "host::".getBytes(StandardCharsets.UTF_8);
+        sendMessage(A_CNXN, VERSION, MAX_PAYLOAD, cnxnPayload);
+        log("已发送 CNXN");
+
+        // ====== 读取响应 ======
+        AdbMessage resp = readMessage();
+        if (resp == null) {
+            throw new IOException("握手超时：adbd 无响应。\n" +
+                "可能原因：\n" +
+                "1. 端口不是 adbd 服务\n" +
+                "2. adbd 需要密钥认证（USB 连接后执行 adb tcpip 5555）\n" +
+                "3. Android 11+ 无线调试需要配对");
+        }
+
+        log("收到响应: cmd=0x" + Integer.toHexString(resp.command) +
+            ", arg0=0x" + Integer.toHexString(resp.arg0) +
+            ", arg1=0x" + Integer.toHexString(resp.arg1));
+
+        // ====== 处理 AUTH ======
+        if (resp.command == A_AUTH) {
+            int authType = resp.arg0;
+            log("收到 AUTH 请求，类型=" + authType + " (1=Token, 2=Signature, 3=RSAPublicKey)");
+
+            // 发送空公钥，触发 adbd 回退（某些版本有效）
+            if (authType == 1 && attempt == 0) {
+                log("发送空公钥尝试绕过...");
+                sendMessage(A_AUTH, 3, 0, new byte[0]);
+                resp = readMessage();
+                if (resp != null && resp.command == A_CNXN) {
+                    log("绕过成功！");
+                } else {
+                    throw new IOException(
+                        "ADB 需要密钥认证，无法绕过。\n" +
+                        "请通过 USB 执行: adb tcpip 5555");
+                }
+            } else {
+                throw new IOException(
+                    "ADB 需要密钥认证 (AUTH type=" + authType + ")\n" +
+                    "解决方案：\n" +
+                    "1. USB 连接手机\n" +
+                    "2. 执行 adb tcpip 5555\n" +
+                    "3. 拔掉 USB 后重试");
+            }
+        }
+
+        if (resp.command != A_CNXN) {
+            throw new IOException(
+                "握手失败：期望 CNXN，收到 0x" +
+                Integer.toHexString(resp.command));
+        }
+
+        log("握手成功！maxPayload=" + resp.arg1);
+    }
+
+    // ============================================
+    // Shell 命令执行
+    // ============================================
+
     public ShellResult shell(String command) throws IOException {
+        if (!isConnected()) {
+            throw new IOException("未连接到 adbd");
+        }
+
+        log("shell: " + command);
+
         int remoteId = openService("shell:" + command);
+
         StringBuilder stdout = new StringBuilder();
         StringBuilder stderr = new StringBuilder();
         int exitCode = -1;
 
-        // 读取响应直到 CLSE
         while (true) {
             AdbMessage msg = readMessage();
-            if (msg == null) break;
+            if (msg == null) {
+                log("连接关闭");
+                break;
+            }
 
             switch (msg.command) {
-                case A_OKAY:
-                    // 确认连接建立
-                    break;
-
                 case A_WRTE:
-                    // 命令输出数据
                     if (msg.payload != null && msg.payload.length > 0) {
-                        // adbd 输出格式: [fd_id:1字节][data:剩余]
-                        // fd_id: 1=stdout, 2=stderr
+                        // shell_v2: first byte = fd (1=stdout, 2=stderr)
+                        int offset = 0;
                         if (msg.payload.length > 1) {
                             int fd = msg.payload[0] & 0xFF;
                             String text = new String(msg.payload, 1,
                                     msg.payload.length - 1, StandardCharsets.UTF_8);
-                            if (fd == 1) {
-                                stdout.append(text);
-                            } else if (fd == 2) {
-                                stderr.append(text);
-                            } else {
-                                stdout.append(text); // 默认当 stdout
-                            }
+                            if (fd == 1) stdout.append(text);
+                            else if (fd == 2) stderr.append(text);
+                            else stdout.append(text);  // unknown fd -> stdout
+                        } else {
+                            stdout.append(new String(msg.payload, StandardCharsets.UTF_8));
                         }
                     }
-                    // 确认收到: 发送 OKAY(remoteId, localId)
                     sendOkay(remoteId, msg.arg0);
                     break;
 
                 case A_CLSE:
-                    // 连接关闭, arg1 可能是退出码
                     exitCode = msg.arg1;
+                    log("exitCode=" + exitCode);
                     sendClose(remoteId, msg.arg0);
                     return new ShellResult(exitCode, stdout.toString(), stderr.toString());
 
+                case A_OKAY:
+                    break;
+
                 default:
+                    log("未知消息: 0x" + Integer.toHexString(msg.command));
                     break;
             }
         }
@@ -154,131 +231,125 @@ public class AdbConnection implements Closeable {
         return new ShellResult(exitCode, stdout.toString(), stderr.toString());
     }
 
-    /**
-     * 打开一个服务 (如 shell, exec, sync 等)
-     * 发送 OPEN(localId, 0, "service\0")
-     * 等待 OKAY 响应
-     *
-     * @return remoteId
-     */
+    // ============================================
+    // 底层 ADB 协议方法
+    // ============================================
+
     private int openService(String service) throws IOException {
-        int id = localId++;
+        int local = localId++;
         byte[] payload = (service + "\0").getBytes(StandardCharsets.UTF_8);
 
-        ByteBuffer bb = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
-        bb.putInt(A_OPEN);
-        bb.putInt(id);              // arg0 = local id
-        bb.putInt(0);               // arg1 = 0
-        bb.putInt(payload.length);  // payload length
-        bb.putInt(0);               // magic (unused for OPEN)
-        bb.putInt(0);               // padding
+        sendMessage(A_OPEN, local, 0, payload);
 
-        out.write(bb.array());
-        out.write(payload);
-        out.flush();
-
-        // 等待 OKAY 响应，获取 remoteId
         AdbMessage resp = readMessage();
-        if (resp == null) {
-            throw new IOException("打开服务失败: 无响应");
-        }
-        if (resp.command == A_OKAY) {
-            return resp.arg1; // remote id
-        }
+        if (resp == null) throw new IOException("openService 无响应");
+
+        if (resp.command == A_OKAY) return resp.arg1;
+
         if (resp.command == A_CLSE) {
-            throw new IOException("服务不可用: " + service);
+            String err = "服务不可用: " + service;
+            if (resp.payload != null) {
+                err += " - " + new String(resp.payload, StandardCharsets.UTF_8);
+            }
+            throw new IOException(err);
         }
-        throw new IOException("打开服务失败: 未知响应 0x" +
-                Integer.toHexString(resp.command));
+
+        throw new IOException("openService 异常响应: 0x" + Integer.toHexString(resp.command));
     }
 
-    /**
-     * 发送 OKAY 消息
-     */
+    private void sendMessage(int cmd, int arg0, int arg1, byte[] payload) throws IOException {
+        ByteBuffer bb = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
+        bb.putInt(cmd);
+        bb.putInt(arg0);
+        bb.putInt(arg1);
+        bb.putInt(payload != null ? payload.length : 0);
+        bb.putInt(0);  // magic
+        bb.putInt(0);  // padding
+
+        synchronized (out) {
+            out.write(bb.array());
+            if (payload != null && payload.length > 0) {
+                out.write(payload);
+            }
+            out.flush();
+        }
+    }
+
     private void sendOkay(int localId, int remoteId) throws IOException {
-        ByteBuffer bb = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
-        bb.putInt(A_OKAY);
-        bb.putInt(localId);
-        bb.putInt(remoteId);
-        bb.putInt(0); // payload length = 0
-        bb.putInt(0);
-        bb.putInt(0);
-        out.write(bb.array());
-        out.flush();
+        sendMessage(A_OKAY, localId, remoteId, null);
     }
 
-    /**
-     * 发送 CLSE 消息
-     */
     private void sendClose(int localId, int remoteId) throws IOException {
-        ByteBuffer bb = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
-        bb.putInt(A_CLSE);
-        bb.putInt(localId);
-        bb.putInt(remoteId);
-        bb.putInt(0);
-        bb.putInt(0);
-        bb.putInt(0);
-        out.write(bb.array());
-        out.flush();
+        sendMessage(A_CLSE, localId, remoteId, null);
     }
 
-    /**
-     * 读取一个 ADB 消息 (24字节头 + payload)
-     */
     private AdbMessage readMessage() throws IOException {
+        if (!isConnected()) return null;
+
         byte[] header = new byte[24];
         int read = fillBuffer(header);
+        if (read == 0) return null;
         if (read != 24) {
-            return null; // 连接已关闭
+            log("头部不完整: " + read + "/24");
+            return null;
         }
 
         ByteBuffer bb = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
-        int command   = bb.getInt();
-        int arg0      = bb.getInt();
-        int arg1      = bb.getInt();
+        int command = bb.getInt();
+        int arg0 = bb.getInt();
+        int arg1 = bb.getInt();
         int payloadLen = bb.getInt();
-        int magic     = bb.getInt();
-        int padding   = bb.getInt();
 
         byte[] payload = null;
         if (payloadLen > 0 && payloadLen <= MAX_PAYLOAD) {
             payload = new byte[payloadLen];
             fillBuffer(payload);
+        } else if (payloadLen > MAX_PAYLOAD) {
+            // 跳过超大 payload
+            log("超大 payload: " + payloadLen + "，跳过...");
+            byte[] skip = new byte[8192];
+            int remaining = payloadLen;
+            while (remaining > 0) {
+                int r = in.read(skip, 0, Math.min(skip.length, remaining));
+                if (r == -1) break;
+                remaining -= r;
+            }
         }
 
-        return new AdbMessage(command, arg0, arg1, payloadLen, payload);
+        return new AdbMessage(command, arg0, arg1, payload);
     }
 
-    /**
-     * 填满缓冲区（处理 TCP 分包）
-     */
     private int fillBuffer(byte[] buffer) throws IOException {
         int total = 0;
-        int len = buffer.length;
-        while (total < len) {
-            int read = in.read(buffer, total, len - total);
-            if (read == -1) return total;
-            total += read;
+        while (total < buffer.length) {
+            int r = in.read(buffer, total, buffer.length - total);
+            if (r == -1) {
+                log("EOF at " + total + "/" + buffer.length);
+                return total;
+            }
+            total += r;
         }
         return total;
     }
 
-    /**
-     * 检测 adbd 是否在指定端口监听
-     */
-    public static boolean isAdbdListening(String host, int port) {
-        try (Socket s = new Socket()) {
-            s.connect(new java.net.InetSocketAddress(host, port), 500);
-            return true;
-        } catch (IOException e) {
-            return false;
-        }
+    // ============================================
+    // 状态查询
+    // ============================================
+
+    public boolean isConnected() {
+        return socket != null && !socket.isClosed() && socket.isConnected();
     }
 
     @Override
-    public void close() throws IOException {
-        if (socket != null && !socket.isClosed()) {
-            socket.close();
+    public void close() {
+        log("关闭连接");
+        try {
+            if (socket != null) socket.close();
+        } catch (IOException ignored) {
+        } finally {
+            socket = null;
+            out = null;
+            in = null;
         }
     }
 
@@ -286,50 +357,31 @@ public class AdbConnection implements Closeable {
     // 内部类
     // ============================================
 
-    /** ADB 消息 */
     private static class AdbMessage {
-        final int command;
-        final int arg0;
-        final int arg1;
-        final int payloadLength;
+        final int command, arg0, arg1;
         final byte[] payload;
 
-        AdbMessage(int command, int arg0, int arg1, int payloadLength, byte[] payload) {
-            this.command = command;
-            this.arg0 = arg0;
-            this.arg1 = arg1;
-            this.payloadLength = payloadLength;
-            this.payload = payload;
+        AdbMessage(int cmd, int a0, int a1, byte[] p) {
+            command = cmd;
+            arg0 = a0;
+            arg1 = a1;
+            payload = p;
         }
     }
 
-    /** Shell 命令执行结果 */
     public static class ShellResult {
         public final int exitCode;
         public final String stdout;
         public final String stderr;
 
-        public ShellResult(int exitCode, String stdout, String stderr) {
-            this.exitCode = exitCode;
-            this.stdout = stdout;
-            this.stderr = stderr;
+        public ShellResult(int code, String out, String err) {
+            exitCode = code;
+            stdout = out != null ? out : "";
+            stderr = err != null ? err : "";
         }
 
         public boolean isSuccess() {
             return exitCode == 0;
-        }
-
-        @Override
-        public String toString() {
-            StringBuilder sb = new StringBuilder();
-            sb.append("ExitCode=").append(exitCode).append("\n");
-            if (stdout != null && !stdout.isEmpty()) {
-                sb.append("[STDOUT]\n").append(stdout);
-            }
-            if (stderr != null && !stderr.isEmpty()) {
-                sb.append("[STDERR]\n").append(stderr);
-            }
-            return sb.toString();
         }
     }
 }
