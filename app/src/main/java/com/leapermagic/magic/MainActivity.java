@@ -80,7 +80,41 @@ public class MainActivity extends AppCompatActivity {
 
     private final Handler saveHandler = new Handler(Looper.getMainLooper());
     private final Runnable saveRunnable = () -> savePath(etTargetPath.getText().toString().trim());
-
+    
+    private AdbClient.AdbConnection currentConnection;
+    
+    /**
+     * 示例1：端口检查
+     */
+    private void checkPort(String ip, int port) {
+        new Thread(() -> {
+            boolean open = AdbClient.checkAdbPort(ip, port, 3000);
+            runOnUiThread(() -> {
+                Toast.makeText(this, "端口" + port + ": " + (open ? "开放" : "关闭"), 
+                               Toast.LENGTH_SHORT).show();
+                appendLog("端口" + port + ": " + (open ? "开放" : "关闭"));
+            });
+        }).start();
+    }
+    
+    /**
+     * 示例2：连接ADB设备
+     */
+    private void connectToDevice(String ip, int port) {
+        new Thread(() -> {
+            AdbClient.AdbConnectionResult result = AdbClient.connect(ip, port);
+            
+            runOnUiThread(() -> {
+                if (result.success) {
+                    currentConnection = result.connection;
+                    appendLog("连接成功: " + result.message);
+                } else {
+                    appendLog("连接失败: " + result.message);
+                }
+            });
+        }).start();
+    }
+    
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -164,6 +198,9 @@ public class MainActivity extends AppCompatActivity {
         btnExecuteInstall.setOnClickListener(v -> executeInstall());
 
         checkPermissions();
+
+        checkPort("127.0.0.1", 5555);
+        connectToDevice("127.0.0.1", 5555);
     }
     
     /**
