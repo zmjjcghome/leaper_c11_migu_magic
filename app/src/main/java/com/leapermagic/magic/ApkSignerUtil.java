@@ -6,6 +6,10 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 import android.util.Base64;
 import android.util.Log;
+import android.database.Cursor;
+import android.os.Environment;
+import android.provider.MediaStore;
+import android.provider.OpenableColumns;
 
 import com.android.apksig.ApkSigner;
 import com.android.apksig.ApkVerifier;
@@ -163,18 +167,70 @@ public class ApkSignerUtil {
         }
     }
 
-    public static File generateOutputFile(Uri apkUri) {
+    public static File generateOutputFile(Context context, Uri apkUri) {
         if (apkUri == null) return null;
-
+    
+        // 方案1：尝试从 Uri 直接解析文件路径
         File originalFile = resolveFileFromUri(apkUri);
-        if (originalFile != null && originalFile.getParentFile() != null) {
+        if (originalFile != null && originalFile.exists() && originalFile.getParentFile() != null) {
             String newName = insertResignedBeforeExtension(originalFile.getName());
             return new File(originalFile.getParentFile(), newName);
         }
-
-        String path = apkUri.getPath();
-        if (path == null || path.isEmpty()) return null;
-        return new File(insertResignedBeforeExtension(path));
+    
+        // 方案2：用 ContentResolver 查真实路径
+        String realPath = getRealPathFromUri(context, apkUri);
+        if (realPath != null) {
+            File f = new File(realPath);
+            if (f.getParentFile() != null) {
+                String newName = insertResignedBeforeExtension(f.getName());
+                return new File(f.getParentFile(), newName);
+            }
+        }
+    
+        // 方案3：兜底 - 放到 Download 目录
+        String fileName = getFileNameFromUri(context, apkUri);
+        if (fileName == null) fileName = "unknown.apk";
+        String newName = insertResignedBeforeExtension(fileName);
+        return new File(Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS), newName);
+    }
+    
+    // ---------- 新增辅助方法 ----------
+    
+    private static String getRealPathFromUri(Context context, Uri uri) {
+        String path = null;
+        if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+            try (Cursor cursor = context.getContentResolver().query(uri, null, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA);
+                    if (idx >= 0 && !cursor.isNull(idx)) {
+                        path = cursor.getString(idx);
+                    } else {
+                        int displayIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                        if (displayIdx >= 0) {
+                            path = cursor.getString(displayIdx);
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        return path;
+    }
+    
+    private static String getFileNameFromUri(Context context, Uri uri) {
+        String name = null;
+        if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+            try (Cursor cursor = context.getContentResolver().query(uri, null, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst()) {
+                    int idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    if (idx >= 0) name = cursor.getString(idx);
+                }
+            } catch (Exception ignored) {}
+        }
+        if (name == null && uri.getPath() != null) {
+            name = new File(Uri.decode(uri.getPath())).getName();
+        }
+        return name != null ? name : "unsigned.apk";
     }
 
     // ================================================================
