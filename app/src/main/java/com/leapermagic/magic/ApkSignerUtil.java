@@ -228,29 +228,71 @@ public class ApkSignerUtil {
     @SuppressWarnings("unchecked")
     private X509Certificate generateCertificateFor(KeyPair kp) throws Exception {
         log("生成自签名证书...");
-
-        // CertAndKeyGen 在 Android 运行时可用（来自 sun.*）
-        Class<?> cakgClass = Class.forName("sun.security.tools.keytool.CertAndKeyGen");
-        Object cakg = cakgClass.getConstructor(String.class, String.class)
-                .newInstance("RSA", "SHA256WithRSA");
-
-        // 设置随机数
-        cakgClass.getMethod("setRandom", SecureRandom.class).invoke(cakg, new SecureRandom());
-
-        // 生成证书
-        cakgClass.getMethod("generate", int.class).invoke(cakg, KEY_SIZE);
-
-        // getSelfCertificate
-        long firstDate = System.currentTimeMillis() - 86400000L;
-        long lastDate  = firstDate + CERT_VALIDITY_DAYS * 86400000L;
-
-        X500Principal principal = new X500Principal("CN=" + CERT_CN + ", OU=Dev, O=AutoSign, L=SH, ST=SH, C=CN");
-
-        X509Certificate[] chain = (X509Certificate[]) cakgClass
-                .getMethod("getSelfCertificate", X500Principal.class, long.class)
-                .invoke(cakg, principal, lastDate);
-
-        X509Certificate cert = chain[0];
+    
+        // ========== 用 sun.security.x509（Android 运行时确实存在）==========
+        Class<?> infoClass    = Class.forName("sun.security.x509.CertAndKeyGen");
+        Class<?> x509Class    = Class.forName("sun.security.x509.X509CertImpl");  // 拼写修正
+        Class<?> issuerClass  = Class.forName("sun.security.x509.X500Name");       // 拼写修正
+    
+        long now = System.currentTimeMillis();
+        Date notBefore = new Date(now - 86400000L);
+        Date notAfter  = new Date(now + CERT_VALIDITY_DAYS * 86400000L);
+    
+        // 1) 构建 X500Name
+        String dn = "CN=" + CERT_CN + ", OU=Dev, O=AutoSign, L=SH, ST=SH, C=CN";
+        Object x500Name = issuerClass.getConstructor(String.class).newInstance(dn);
+    
+        // 2) 构建 CertificateValidity
+        Class<?> validityClass = Class.forName("sun.security.x509.CertificateValidity");
+        Object validity = validityClass.getConstructor(Date.class, Date.class)
+                .newInstance(notBefore, notAfter);
+    
+        // 3) 构建 CertificateSerialNumber
+        Class<?> serialClass = Class.forName("sun.security.x509.CertificateSerialNumber");
+        Object serial = serialClass.getConstructor(int.class)
+                .newInstance(new BigInteger(64, new SecureRandom()).intValue() & Integer.MAX_VALUE);
+    
+        // 4) 构建 CertificateVersion (v3)
+        Class<?> versionClass = Class.forName("sun.security.x509.CertificateVersion");
+        Object version = versionClass.getConstructor(int.class).newInstance(2); // v3 = 2
+    
+        // 5) 构建 AlgorithmId
+        Class<?> algoIdClass = Class.forName("sun.security.x509.AlgorithmId");
+        Object algoId = algoIdClass.getMethod("get", String.class).invoke(null, "SHA256WithRSA");
+    
+        // 6) 构建 CertificateX509Key
+        Class<?> keyClass = Class.forName("sun.security.x509.CertificateX509Key");
+        Object key = keyClass.getConstructor(PublicKey.class).newInstance(kp.getPublic());
+    
+        // 7) 构建 CertificateIssuerName / CertificateSubjectName
+        Class<?> issuerNameClass = Class.forName("sun.security.x509.CertificateIssuerName");
+        Class<?> subNameClass    = Class.forName("sun.security.x509.CertificateSubjectName");
+        Object issuerName = issuerNameClass.getConstructor(issuerClass).newInstance(x500Name);
+        Object subName    = subNameClass.getConstructor(issuerClass).newInstance(x500Name);
+    
+        // 8) 构建 X509CertInfo，填充字段
+        Object info = infoClass.getConstructor().newInstance();
+        infoClass.getMethod("set", String.class, Object.class).invoke(info, "version", version);
+        infoClass.getMethod("set", String.class, Object.class).invoke(info, "serialNumber", serial);
+        infoClass.getMethod("set", String.class, Object.class).invoke(info, "algorithmID", algoId);
+        infoClass.getMethod("set", String.class, Object.class).invoke(info, "issuer", issuerName);
+        infoClass.getMethod("set", String.class, Object.class).invoke(info, "validity", validity);
+        infoClass.getMethod("set", String.class, Object.class).invoke(info, "subject", subName);
+        infoClass.getMethod("set", String.class, Object.class).invoke(info, "key", key);
+    
+        // 9) 构建 X509CertImpl（未签名），然后签名
+        Object certObj = x509Class.getConstructor(infoClass).newInstance(info);
+        java.lang.reflect.Method signMethod = x509Class.getMethod("sign",
+                PrivateKey.class, String.class);
+        signMethod.invoke(certObj, kp.getPrivate(), "SHA256WithRSA");
+    
+        // 10) 提取 DER 编码，用 CertificateFactory 还原为标准 X509Certificate
+        byte[] encoded = (byte[]) x509Class.getMethod("getEncoded").invoke(certObj);
+    
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        X509Certificate cert = (X509Certificate) cf.generateCertificate(
+                new ByteArrayInputStream(encoded));
+    
         cachedCertificate = cert;
         log("证书生成完毕, 有效期至: " + cert.getNotAfter());
         return cert;
