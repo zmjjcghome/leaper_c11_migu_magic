@@ -26,6 +26,21 @@ android {
         versionName "2.0"
     }
 
+    // 新增下面这段资源打包规则
+    packagingOptions {
+        resources {
+            excludes += "/META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+            // 额外补充排除Bouncy Castle系列常见冗余重复清单，避免后续编译再出现同类冲突
+            excludes += "/META-INF/BC*.SF"
+            excludes += "/META-INF/BC*.DSA"
+            excludes += "/META-INF/BC*.RSA"
+            excludes += "/META-INF/LICENSE"
+            excludes += "/META-INF/LICENSE.txt"
+            excludes += "/META-INF/NOTICE"
+            excludes += "/META-INF/NOTICE.txt"
+        }
+    }
+    
     buildTypes {
         release {
             signingConfig signingConfigs.release
