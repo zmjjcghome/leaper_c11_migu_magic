@@ -211,8 +211,9 @@ public class AdbClient {
         private final String tag;
         private final AtomicBoolean closed = new AtomicBoolean(false);
         private final long connectTime;
-        // 修复：接受外部传入的 stream
-        AdbConnection(Socket socket, String serial, 
+        private final AtomicInteger localIdCounter = new AtomicInteger(1);  // 新增
+    
+        AdbConnection(Socket socket, String serial,
                       DataInputStream input, DataOutputStream output) throws IOException {
             this.socket = socket;
             this.serial = serial;
@@ -223,11 +224,16 @@ public class AdbClient {
             socket.setSoTimeout(READ_TIMEOUT);
             logI(tag, "连接已建立 | 本地端口=" + socket.getLocalPort());
         }
-        // getter 方法...
+    
+        /** 获取下一个 local-id */
+        int nextLocalId() {
+            return localIdCounter.getAndIncrement();
+        }
+    
         public String getSerial() { return serial; }
         public long getConnectTime() { return connectTime; }
         public boolean isClosed() { return closed.get() || socket.isClosed(); }
-        
+    
         @Override
         public void close() {
             if (closed.compareAndSet(false, true)) {
@@ -460,53 +466,52 @@ public class AdbClient {
     /**
      * 读取原始ADB消息
      * 使用 available() 检测是否有数据，避免死等
+     *
+     * 读取原始ADB消息（修复版 - 使用阻塞读取 + 超时重试）
      */
     private static AdbMessage readAdbMessageRaw(DataInputStream in, String tag) throws IOException {
-        // 先检查是否有数据可读（避免死等）
-        int available = 0;
-        int retryCount = 0;
-        int maxRetries = 60;  // 最多等30秒 (60 * 500ms)
+        int maxWaitTime = 10000;  // 最多等10秒
+        int pollInterval = 200;   // 每200ms检查一次
+        int waited = 0;
         
-        while (available < 24 && retryCount < maxRetries) {
+        // 等待数据到达
+        while (waited < maxWaitTime) {
             try {
-                available = in.available();
+                int available = in.available();
+                if (available >= 24) {
+                    break;  // 有完整头部
+                }
             } catch (IOException e) {
-                available = 0;
+                // socket 可能已关闭
+                logW(tag, "available() 检查失败: " + e.getMessage());
+                return null;
             }
             
-            if (available >= 24) {
-                break;  // 有完整头部，可以读取
-            }
-            
-            retryCount++;
-            if (retryCount == 1) {
-                logD(tag, "等待数据... | available=" + available);
+            if (waited == 0) {
+                logD(tag, "等待数据到达...");
             }
             
             try {
-                Thread.sleep(500);
+                Thread.sleep(pollInterval);
+                waited += pollInterval;
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 logW(tag, "等待被中断");
                 return null;
             }
-            
-            // 定期输出等待日志
-            if (retryCount % 10 == 0) {
-                logD(tag, "仍在等待数据... | retry=" + retryCount + " | available=" + available);
-            }
         }
         
-        if (available < 24) {
-            logE(tag, "等待超时 | retryCount=" + retryCount + " | available=" + available);
+        if (waited >= maxWaitTime) {
+            logE(tag, "等待数据超时 | 已等待=" + waited + "ms");
             return null;
         }
+        
+        // 使用 readFully 确保读满24字节
         try {
-            AdbMessage msg = new AdbMessage();
             byte[] header = new byte[24];
-            
-            // 使用 readFully 确保读满24字节
             in.readFully(header);
+            
+            AdbMessage msg = new AdbMessage();
             ByteBuffer buf = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
             msg.command = buf.getInt();
             msg.arg0 = buf.getInt();
@@ -514,58 +519,50 @@ public class AdbClient {
             msg.dataLength = buf.getInt();
             msg.dataCrc32 = buf.getInt();
             msg.magic = buf.getInt();
+            
             // 验证magic
             int expectedMagic = msg.command ^ 0xFFFFFFFF;
             if (msg.magic != expectedMagic) {
                 logE(tag, "Magic验证失败! | cmd=0x" + Integer.toHexString(msg.command).toUpperCase() +
-                          " | 期望magic=0x" + Integer.toHexString(expectedMagic).toUpperCase() +
-                          " | 实际magic=0x" + Integer.toHexString(msg.magic).toUpperCase());
-                
-                // 尝试重新同步：搜索正确的magic
-                logW(tag, "尝试重新同步...");
-                // 简单处理：直接返回null，让上层重试
+                          " | 期望=0x" + Integer.toHexString(expectedMagic).toUpperCase() +
+                          " | 实际=0x" + Integer.toHexString(msg.magic).toUpperCase());
                 return null;
             }
+            
             // 读取payload
             if (msg.dataLength > 0 && msg.dataLength <= MAX_PAYLOAD) {
                 msg.payload = new byte[msg.dataLength];
                 in.readFully(msg.payload);
             } else if (msg.dataLength > MAX_PAYLOAD) {
-                logW(tag, "Payload过大 | dataLen=" + msg.dataLength + " | 限制=" + MAX_PAYLOAD);
-                // 尝试读取并丢弃
-                byte[] discard = new byte[MAX_PAYLOAD];
-                int remaining = msg.dataLength;
-                while (remaining > 0) {
-                    int toRead = Math.min(remaining, MAX_PAYLOAD);
-                    int read = in.read(discard, 0, toRead);
-                    if (read < 0) break;
-                    remaining -= read;
-                }
+                logW(tag, "Payload过大 | dataLen=" + msg.dataLength + " | 跳过");
+                long skipped = in.skip(msg.dataLength);
+                logD(tag, "已跳过 " + skipped + " bytes");
                 msg.payload = null;
             }
+            
             // 日志
             String payloadPreview = "";
             if (msg.payload != null && msg.payload.length > 0) {
-                if (msg.payload.length <= 100) {
-                    payloadPreview = new String(msg.payload, StandardCharsets.UTF_8)
-                        .replace("\0", "\\0").replace("\n", "\\n");
-                } else {
-                    payloadPreview = new String(msg.payload, 0, 100, StandardCharsets.UTF_8)
-                        .replace("\0", "\\0").replace("\n", "\\n") + "...";
-                }
+                payloadPreview = new String(msg.payload, 0, Math.min(msg.payload.length, 80), 
+                                            StandardCharsets.UTF_8)
+                    .replace("\0", "\\0").replace("\n", "\\n");
             }
+            
             logD(tag, "收到RAW | cmd=0x" + Integer.toHexString(msg.command).toUpperCase() +
                        " | arg0=0x" + Integer.toHexString(msg.arg0) +
                        " | arg1=0x" + Integer.toHexString(msg.arg1) +
                        " | dataLen=" + msg.dataLength +
-                       " | data='" + payloadPreview + "'");
+                       (payloadPreview.isEmpty() ? "" : " | data='" + payloadPreview + 
+                        (msg.payload != null && msg.payload.length > 80 ? "..." : "") + "'"));
+            
             return msg;
+            
         } catch (EOFException e) {
-            logW(tag, "读取消息: 意外EOF");
+            logW(tag, "读取消息: 意外EOF | " + e.getMessage());
             return null;
         } catch (SocketTimeoutException e) {
-            logW(tag, "读取消息: 超时");
-            throw e;
+            logW(tag, "读取消息: 超时 | " + e.getMessage());
+            return null;
         }
     }
     /**
@@ -592,104 +589,173 @@ public class AdbClient {
      * @return Shell执行结果
      */
     // ==================== 修改 executeShell ====================
+    /**
+     * 执行ADB Shell命令（修复版 - 正确管理 localId/remoteId）
+     */
     public static ShellResult executeShell(AdbConnection connection, String command) {
         String tag = "Shell[" + connection.serial + "]";
+    
         logI(tag, "========== 执行命令: '" + command + "' ==========");
+    
         try {
             if (connection.isClosed()) {
                 logE(tag, "连接已关闭，无法执行");
                 return new ShellResult(-1, "", "连接已关闭");
             }
+    
             DataOutputStream out = connection.output;
             DataInputStream in = connection.input;
+    
+            // 使用递增的 local-id（从1开始，避免与系统冲突）
+            int localId = connection.nextLocalId();
+            
             // 1. 打开Shell通道
-            logD(tag, "打开Shell通道: shell:" + command);
+            // 格式: "shell:command\0" 或 "shell,arg1,arg2:command\0"（对于exec）
             String shellPayload = "shell:" + command + "\0";
             
-            long t1 = System.currentTimeMillis();
-            sendShellMessage(out, A_OPEN, 0x00000000, 0x00000000, 
+            logD(tag, "步骤1: 打开Shell通道 | localId=" + localId + " | payload=" + 
+                       shellPayload.replace("\0", "\\0"));
+            
+            sendShellMessage(out, A_OPEN, localId, 0x00000000, 
                              shellPayload.getBytes(StandardCharsets.UTF_8), tag);
-            // 2. 等待OKAY
+    
+            // 2. 等待OKAY 或 CLSE
+            logD(tag, "步骤2: 等待通道响应...");
             AdbMessage response = readAdbMessageRaw(in, tag);
-            if (response == null || response.command != A_OKAY) {
-                String reason = response != null ? 
-                    "0x" + Integer.toHexString(response.command) : "null";
-                logE(tag, "无法打开Shell通道 | response=" + reason);
-                return new ShellResult(-1, "", "无法打开Shell通道: " + reason);
+            
+            if (response == null) {
+                logE(tag, "无法打开Shell通道：无响应（null）");
+                return new ShellResult(-1, "", "无法打开Shell通道：无响应");
             }
-            int remoteId = response.arg0;  // 服务端分配的 remote-id
-            int localId = response.arg1;   // 我们的 local-id
-            logD(tag, "Shell通道已打开 | localId=" + localId + " | remoteId=" + remoteId + 
-                       " | 耗时=" + (System.currentTimeMillis() - t1) + "ms");
+            
+            logD(tag, "收到通道响应 | cmd=0x" + Integer.toHexString(response.command).toUpperCase() +
+                       " | arg0=" + response.arg0 + " | arg1=" + response.arg1);
+    
+            if (response.command == A_CLSE) {
+                // 命令被立即拒绝
+                String reason = "";
+                if (response.payload != null) {
+                    reason = new String(response.payload, StandardCharsets.UTF_8).trim();
+                }
+                logE(tag, "Shell通道被拒绝 | reason=" + reason);
+                return new ShellResult(-1, "", "Shell被拒绝: " + reason);
+            }
+            
+            if (response.command != A_OKAY) {
+                logE(tag, "无法打开Shell通道 | 期望=OKAY | 实际=0x" + 
+                          Integer.toHexString(response.command).toUpperCase());
+                return new ShellResult(-1, "", 
+                    "无法打开Shell通道: 0x" + Integer.toHexString(response.command));
+            }
+    
+            int remoteId = response.arg0;
+            // response.arg1 应该是我们的 localId
+            logD(tag, "Shell通道已打开 ✓ | localId=" + localId + " | remoteId=" + remoteId);
+    
             // 3. 读取输出数据
             StringBuilder stdout = new StringBuilder();
             StringBuilder stderr = new StringBuilder();
             boolean shellClosed = false;
             int writeCount = 0;
             long totalBytes = 0;
-            logD(tag, "开始读取输出...");
+    
+            logD(tag, "步骤3: 读取命令输出...");
+    
             while (!shellClosed) {
                 response = readAdbMessageRaw(in, tag);
                 if (response == null) {
-                    logW(tag, "读取到null消息，终止读取");
+                    logW(tag, "读取到null消息，可能连接断开 | 已读取=" + writeCount + "块");
+                    shellClosed = true;
                     break;
                 }
+    
                 switch (response.command) {
                     case A_WRTE:
                         writeCount++;
                         String data = new String(response.payload, StandardCharsets.UTF_8);
                         stdout.append(data);
                         totalBytes += response.payload.length;
-                        if (writeCount <= 3 || writeCount % 50 == 0) {
-                            logD(tag, "收到数据块#" + writeCount + " | 大小=" + response.payload.length +
+    
+                        if (writeCount <= 3) {
+                            logD(tag, "数据块#" + writeCount + " | 大小=" + response.payload.length +
+                                       " bytes | 内容='" + 
+                                       data.substring(0, Math.min(60, data.length()))
+                                           .replace("\n", "\\n") + 
+                                       (data.length() > 60 ? "..." : "") + "'");
+                        } else if (writeCount % 100 == 0) {
+                            logD(tag, "数据块#" + writeCount + " | 大小=" + response.payload.length +
                                        " bytes | 累计=" + totalBytes + " bytes");
                         }
-                        // 发送OKAY确认
-                        sendShellMessage(out, A_OKAY, response.arg0, response.arg1, null, tag);
+    
+                        // 发送OKAY确认（注意：arg0=remoteId, arg1=localId）
+                        sendShellMessage(out, A_OKAY, localId, remoteId, null, tag);
                         break;
+    
                     case A_CLSE:
+                        // Shell远程关闭
                         shellClosed = true;
-                        logD(tag, "Shell通道关闭 | 总数据块=" + writeCount +
-                                   " | 总字节=" + totalBytes + " bytes");
+                        int closeRemoteId = response.arg0;
+                        logD(tag, "Shell通道远程关闭 | remoteId=" + closeRemoteId + 
+                                   " | 总数据块=" + writeCount + " | 总字节=" + totalBytes + " bytes");
+                        
+                        // 如果payload有内容，可能是退出码
+                        if (response.payload != null && response.payload.length > 0) {
+                            String closeData = new String(response.payload, StandardCharsets.UTF_8);
+                            logD(tag, "关闭附带数据: " + closeData.trim());
+                            stderr.append(closeData);
+                        }
+                        
                         // 发送CLSE确认
-                        sendShellMessage(out, A_CLSE, response.arg0, response.arg1, null, tag);
+                        sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
                         break;
+    
                     case A_OKAY:
-                        logD(tag, "收到OKAY确认 | localId=" + response.arg0 + 
+                        // 就绪确认（可能在WRTE之前）
+                        logD(tag, "收到OKAY | localId=" + response.arg0 + 
                                    " | remoteId=" + response.arg1);
                         break;
+    
                     default:
-                        if (response.payload != null) {
-                            String errData = new String(response.payload, StandardCharsets.UTF_8);
-                            stderr.append(errData);
-                            logW(tag, "收到未知响应 | cmd=0x" +
+                        if (response.payload != null && response.payload.length > 0) {
+                            String extra = new String(response.payload, StandardCharsets.UTF_8);
+                            logW(tag, "未知响应 | cmd=0x" + 
                                       Integer.toHexString(response.command).toUpperCase() +
-                                      " | data=" + 
-                                      errData.substring(0, Math.min(100, errData.length())));
+                                      " | data=" + extra.substring(0, Math.min(100, extra.length())));
+                            stderr.append("[UNKNOWN:").append(response.command).append("]").append(extra);
+                        } else {
+                            logW(tag, "未知响应 | cmd=0x" + 
+                                      Integer.toHexString(response.command).toUpperCase());
                         }
                         break;
                 }
             }
-            // 4. 关闭本地通道
+    
+            // 4. 确保本地关闭
             sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
-            long elapsed = System.currentTimeMillis() - t1;
+    
             String stdoutStr = stdout.toString();
             String stderrStr = stderr.toString();
-            logI(tag, "命令执行完成 | 耗时=" + elapsed + "ms | stdout=" + stdoutStr.length() +
-                     " bytes | stderr=" + stderrStr.length() + " bytes");
-            if (!stdoutStr.isEmpty() && stdoutStr.length() <= 200) {
-                logD(tag, "stdout: " + stdoutStr.trim());
+    
+            logI(tag, "========== 执行完成 | 数据块=" + writeCount + 
+                     " | stdout=" + stdoutStr.length() + " bytes" +
+                     " | stderr=" + stderrStr.length() + " bytes ==========");
+    
+            if (!stdoutStr.isEmpty() && stdoutStr.length() <= 300) {
+                logD(tag, "STDOUT:\n" + stdoutStr.trim());
             } else if (!stdoutStr.isEmpty()) {
-                logD(tag, "stdout(前200字符): " + 
-                      stdoutStr.substring(0, Math.min(200, stdoutStr.length())).trim() + "...");
+                logD(tag, "STDOUT(前300字符):\n" + 
+                      stdoutStr.substring(0, Math.min(300, stdoutStr.length())).trim() + "...");
             }
+    
             if (!stderrStr.isEmpty()) {
-                logW(tag, "stderr: " + stderrStr.trim());
+                logW(tag, "STDERR:\n" + stderrStr.trim());
             }
+    
             return new ShellResult(0, stdoutStr, stderrStr);
+    
         } catch (SocketTimeoutException e) {
-            logE(tag, "读取超时", e);
-            return new ShellResult(-1, "", "读取超时: " + e.getMessage());
+            logE(tag, "Socket超时", e);
+            return new ShellResult(-1, "", "Socket超时: " + e.getMessage());
         } catch (Exception e) {
             logE(tag, "执行异常", e);
             logD(tag, "异常堆栈:\n" + getStackTrace(e));
