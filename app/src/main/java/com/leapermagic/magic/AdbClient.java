@@ -49,6 +49,19 @@ public class AdbClient {
     private static final int CMD_OKAY = 0x59414b4f;  // "OKAY"
     private static final int CMD_CLSE = 0x45534c43;  // "CLSE"
     private static final int CMD_WRTE = 0x45545257;  // "WRTE"
+    
+    // ==================== 新增/修改常量 ====================
+    // ADB协议命令常量补充
+    private static final int A_SYNC = 0x434e5953;  // "SYNC"
+    private static final int A_CNXN = 0x4e584e43;  // "CNXN"
+    private static final int A_AUTH = 0x48545541;  // "AUTH"
+    private static final int A_OPEN = 0x4e45504f;  // "OPEN"
+    private static final int A_OKAY = 0x59414b4f;  // "OKAY"
+    private static final int A_CLSE = 0x45534c43;  // "CLSE"
+    private static final int A_WRTE = 0x45545257;  // "WRTE"
+    private static final int AUTH_TYPE_TOKEN = 1;
+    private static final int AUTH_TYPE_SIGNATURE = 2;
+    private static final int AUTH_TYPE_RSAPUBLICKEY = 3;
 
     // ==================== 日志接口 ====================
     
@@ -189,6 +202,7 @@ public class AdbClient {
     /**
      * ADB连接对象
      */
+    // ==================== 修复 AdbConnection 构造函数 ====================
     public static class AdbConnection implements Closeable {
         private final Socket socket;
         private final DataInputStream input;
@@ -197,18 +211,19 @@ public class AdbClient {
         private final String tag;
         private final AtomicBoolean closed = new AtomicBoolean(false);
         private final long connectTime;
-        
-        AdbConnection(Socket socket, String serial) throws IOException {
+        // 修复：接受外部传入的 stream
+        AdbConnection(Socket socket, String serial, 
+                      DataInputStream input, DataOutputStream output) throws IOException {
             this.socket = socket;
             this.serial = serial;
             this.tag = "AdbConn[" + serial + "]";
             this.connectTime = System.currentTimeMillis();
-            this.input = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
-            this.output = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
+            this.input = input;
+            this.output = output;
             socket.setSoTimeout(READ_TIMEOUT);
             logI(tag, "连接已建立 | 本地端口=" + socket.getLocalPort());
         }
-        
+        // getter 方法...
         public String getSerial() { return serial; }
         public long getConnectTime() { return connectTime; }
         public boolean isClosed() { return closed.get() || socket.isClosed(); }
@@ -281,51 +296,52 @@ public class AdbClient {
      * @param keyPair RSA密钥对（用于认证，可为null自动生成）
      * @return 连接结果
      */
+    // ==================== 修复连接方法 ====================
+    /**
+     * ADB连接（修复版）
+     */
     public static AdbConnectionResult connect(String host, int port, KeyPair keyPair) {
         String tag = "Connect[" + host + ":" + port + "]";
         Socket socket = null;
-        
         logI(tag, "========== 开始ADB连接 ==========");
-        
         try {
             // 1. 建立TCP连接
-            logD(tag, "步骤1/5: 建立TCP连接...");
+            logD(tag, "步骤1/6: 建立TCP连接...");
             long t1 = System.currentTimeMillis();
-            
             socket = new Socket();
             socket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT);
             socket.setTcpNoDelay(true);
-            
+            socket.setSoTimeout(READ_TIMEOUT);
             long tcpTime = System.currentTimeMillis() - t1;
-            logI(tag, "TCP连接成功 | 耗时=" + tcpTime + "ms | " + 
-                     socket.getLocalAddress().getHostAddress() + ":" + socket.getLocalPort() + 
+            logI(tag, "TCP连接成功 | 耗时=" + tcpTime + "ms | " +
+                     socket.getLocalAddress().getHostAddress() + ":" + socket.getLocalPort() +
                      " -> " + host + ":" + port);
-            
             DataInputStream in = new DataInputStream(new BufferedInputStream(socket.getInputStream()));
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream()));
-            
-            // 2. 发送连接命令
-            String connectCmd = String.format(CMD_CONNECT, host, port);
-            logD(tag, "步骤2/5: 发送连接命令... | 命令=" + connectCmd);
-            
-            sendAdbMessage(out, connectCmd, tag);
-            
-            // 3. 读取响应
-            logD(tag, "步骤3/5: 等待响应...");
-            AdbMessage response = readAdbMessage(in, tag);
-            
+            // ============ 修复点1：先发送 CNXN 握手消息 ============
+            logD(tag, "步骤2/6: 发送CNXN握手消息...");
+            // CNXN格式: version(4字节) + maxdata(4字节) + "host::\0"
+            String handshakePayload = "host::\0";
+            sendAdbRawMessage(out, A_CNXN, ADB_VERSION, MAX_PAYLOAD, 
+                              handshakePayload.getBytes(StandardCharsets.UTF_8), tag);
+            logD(tag, "CNXN握手消息已发送 | version=0x" + Integer.toHexString(ADB_VERSION) + 
+                       " | maxdata=" + MAX_PAYLOAD);
+            // ============ 修复点2：读取握手响应 ============
+            logD(tag, "步骤3/6: 等待握手响应...");
+            AdbMessage response = readAdbMessageRaw(in, tag);
             if (response == null) {
-                logE(tag, "连接失败：无响应");
-                return new AdbConnectionResult(false, "无响应", null);
+                logE(tag, "握手失败：无响应");
+                return new AdbConnectionResult(false, "握手无响应", null);
             }
-            
-            logD(tag, "收到响应 | command=0x" + Integer.toHexString(response.command).toUpperCase() + 
-                       " | dataLen=" + response.dataLength);
-            
-            // 4. 处理认证
-            if (response.command == AUTH_TOKEN) {
-                logI(tag, "步骤4/5: 需要RSA认证...");
-                
+            logD(tag, "收到握手响应 | command=0x" + Integer.toHexString(response.command).toUpperCase() +
+                       " | arg0=" + response.arg0 + " | dataLen=" + response.dataLength);
+            // ============ 修复点3：处理认证 ============
+            if (response.command == A_AUTH) {
+                int authType = response.arg0;
+                logI(tag, "步骤4/6: 需要认证 | type=" + authType + 
+                           " (" + (authType == AUTH_TYPE_TOKEN ? "TOKEN" : 
+                                   authType == AUTH_TYPE_SIGNATURE ? "SIGNATURE" : 
+                                   authType == AUTH_TYPE_RSAPUBLICKEY ? "RSAPUBLICKEY" : "UNKNOWN") + ")");
                 if (keyPair == null) {
                     logD(tag, "生成新的RSA密钥对...");
                     long keyGenStart = System.currentTimeMillis();
@@ -333,67 +349,69 @@ public class AdbClient {
                     long keyGenTime = System.currentTimeMillis() - keyGenStart;
                     logI(tag, "RSA密钥对生成完成 | 耗时=" + keyGenTime + "ms | 强度=2048位");
                 }
-                
                 // 发送公钥
                 logD(tag, "发送公钥...");
                 byte[] publicKey = encodePublicKey(keyPair.getPublic());
-                sendAdbMessage(out, AUTH_RSAPUBLICKEY, publicKey, tag);
+                sendAdbRawMessage(out, A_AUTH, AUTH_TYPE_RSAPUBLICKEY, 0, publicKey, tag);
                 logD(tag, "公钥已发送 | 大小=" + publicKey.length + " bytes");
-                
                 // 等待响应
-                response = readAdbMessage(in, tag);
-                
-                if (response != null && response.command == AUTH_TOKEN) {
-                    logD(tag, "收到认证令牌 | 长度=" + response.payload.length + " bytes");
-                    
-                    // 发送签名
+                response = readAdbMessageRaw(in, tag);
+                if (response == null) {
+                    logE(tag, "认证失败：无响应");
+                    try { socket.close(); } catch (Exception ignored) {}
+                    return new AdbConnectionResult(false, "认证无响应", null);
+                }
+                logD(tag, "收到认证响应 | command=0x" + Integer.toHexString(response.command).toUpperCase() +
+                           " | arg0=" + response.arg0);
+                if (response.command == A_AUTH && response.arg0 == AUTH_TYPE_TOKEN) {
+                    logD(tag, "收到认证令牌 | 长度=" + response.dataLength + " bytes");
+                    // 签名令牌
                     byte[] token = response.payload;
                     long signStart = System.currentTimeMillis();
                     byte[] signature = signToken(token, keyPair);
                     long signTime = System.currentTimeMillis() - signStart;
-                    
                     logD(tag, "发送签名 | 大小=" + signature.length + " bytes | 签名耗时=" + signTime + "ms");
-                    sendAdbMessage(out, AUTH_SIGNATURE, signature, tag);
-                    
-                    // 读取最终结果
-                    response = readAdbMessage(in, tag);
-                } else if (response != null) {
-                    logD(tag, "认证跳过 | command=0x" + Integer.toHexString(response.command).toUpperCase());
+                    sendAdbRawMessage(out, A_AUTH, AUTH_TYPE_SIGNATURE, 0, signature, tag);
+                    // 读取最终握手结果
+                    response = readAdbMessageRaw(in, tag);
+                    if (response == null) {
+                        logE(tag, "签名后无响应");
+                        try { socket.close(); } catch (Exception ignored) {}
+                        return new AdbConnectionResult(false, "签名后无响应", null);
+                    }
                 }
-            } else {
-                logD(tag, "步骤4/5: 无需认证（设备已信任）");
             }
-            
-            // 5. 解析连接状态
-            logD(tag, "步骤5/5: 解析连接状态...");
-            
-            if (response != null && response.command == CMD_OKAY) {
+            // 检查握手是否成功（应该是 CNXN 响应）
+            if (response.command == A_CNXN) {
+                // 握手成功，设备已连接
+                String deviceInfo = "";
+                if (response.payload != null && response.payload.length > 0) {
+                    deviceInfo = new String(response.payload, StandardCharsets.UTF_8).trim();
+                }
                 String serial = host + ":" + port;
-                AdbConnection conn = new AdbConnection(socket, serial);
+                logI(tag, "握手成功 | 设备信息=" + deviceInfo);
+                AdbConnection conn = new AdbConnection(socket, serial, in, out);
                 logI(tag, "========== 连接成功 ✓ ==========");
-                return new AdbConnectionResult(true, "连接成功: " + serial, conn);
+                return new AdbConnectionResult(true, "连接成功: " + serial + 
+                                               (deviceInfo.isEmpty() ? "" : " [" + deviceInfo + "]"), conn);
             } else {
                 String msg = "未知错误";
-                if (response != null && response.payload != null) {
+                if (response.payload != null) {
                     msg = new String(response.payload, StandardCharsets.UTF_8).trim();
                 }
-                logE(tag, "连接被拒绝 | 原因=" + msg + 
-                         (response != null ? " | command=0x" + Integer.toHexString(response.command).toUpperCase() : ""));
-                
+                logE(tag, "握手失败 | command=0x" + Integer.toHexString(response.command).toUpperCase() +
+                         " | msg=" + msg);
                 try { socket.close(); } catch (Exception ignored) {}
-                return new AdbConnectionResult(false, "连接失败: " + msg, null);
+                return new AdbConnectionResult(false, "握手失败: " + msg, null);
             }
-            
         } catch (SocketTimeoutException e) {
             logE(tag, "连接超时", e);
             if (socket != null) try { socket.close(); } catch (Exception ignored) {}
             return new AdbConnectionResult(false, "连接超时: " + e.getMessage(), null);
-            
         } catch (ConnectException e) {
             logE(tag, "连接被拒绝", e);
             if (socket != null) try { socket.close(); } catch (Exception ignored) {}
             return new AdbConnectionResult(false, "连接被拒绝: " + e.getMessage(), null);
-            
         } catch (Exception e) {
             logE(tag, "连接异常", e);
             logD(tag, "异常堆栈:\n" + getStackTrace(e));
@@ -401,7 +419,155 @@ public class AdbClient {
             return new AdbConnectionResult(false, "连接异常: " + e.getMessage(), null);
         }
     }
-    
+    // ==================== 新增：原始ADB消息读写 ====================
+    /**
+     * 发送原始ADB消息（用于CNXN/AUTH等）
+     * 格式: command(4) + arg0(4) + arg1(4) + dataLength(4) + dataCrc32(4) + magic(4) + payload
+     */
+    private static void sendAdbRawMessage(DataOutputStream out, int command, int arg0, int arg1, 
+                                           byte[] payload, String tag) throws IOException {
+        int dataLength = (payload != null) ? payload.length : 0;
+        int dataCrc32 = (payload != null && payload.length > 0) ? calculateCrc32(payload) : 0;
+        int magic = command ^ 0xFFFFFFFF;
+        if (dataLength > 512) {
+            logD(tag, "发送RAW | cmd=0x" + Integer.toHexString(command).toUpperCase() +
+                       " | arg0=0x" + Integer.toHexString(arg0) +
+                       " | arg1=0x" + Integer.toHexString(arg1) +
+                       " | dataLen=" + dataLength + " bytes");
+        } else {
+            String preview = (payload != null && payload.length > 0) ?
+                new String(payload, 0, Math.min(payload.length, 64), StandardCharsets.UTF_8)
+                    .replace("\0", "\\0").replace("\n", "\\n") : "";
+            logD(tag, "发送RAW | cmd=0x" + Integer.toHexString(command).toUpperCase() +
+                       " | arg0=0x" + Integer.toHexString(arg0) +
+                       " | arg1=0x" + Integer.toHexString(arg1) +
+                       " | dataLen=" + dataLength +
+                       " | data='" + preview + (dataLength > 64 ? "..." : "") + "'");
+        }
+        ByteBuffer header = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
+        header.putInt(command);
+        header.putInt(arg0);
+        header.putInt(arg1);
+        header.putInt(dataLength);
+        header.putInt(dataCrc32);
+        header.putInt(magic);
+        out.write(header.array());
+        if (payload != null && payload.length > 0) {
+            out.write(payload);
+        }
+        out.flush();
+    }
+    /**
+     * 读取原始ADB消息
+     * 使用 available() 检测是否有数据，避免死等
+     */
+    private static AdbMessage readAdbMessageRaw(DataInputStream in, String tag) throws IOException {
+        // 先检查是否有数据可读（避免死等）
+        int available = 0;
+        int retryCount = 0;
+        int maxRetries = 60;  // 最多等30秒 (60 * 500ms)
+        
+        while (available < 24 && retryCount < maxRetries) {
+            try {
+                available = in.available();
+            } catch (IOException e) {
+                available = 0;
+            }
+            
+            if (available >= 24) {
+                break;  // 有完整头部，可以读取
+            }
+            
+            retryCount++;
+            if (retryCount == 1) {
+                logD(tag, "等待数据... | available=" + available);
+            }
+            
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                logW(tag, "等待被中断");
+                return null;
+            }
+            
+            // 定期输出等待日志
+            if (retryCount % 10 == 0) {
+                logD(tag, "仍在等待数据... | retry=" + retryCount + " | available=" + available);
+            }
+        }
+        
+        if (available < 24) {
+            logE(tag, "等待超时 | retryCount=" + retryCount + " | available=" + available);
+            return null;
+        }
+        try {
+            AdbMessage msg = new AdbMessage();
+            byte[] header = new byte[24];
+            
+            // 使用 readFully 确保读满24字节
+            in.readFully(header);
+            ByteBuffer buf = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
+            msg.command = buf.getInt();
+            msg.arg0 = buf.getInt();
+            msg.arg1 = buf.getInt();
+            msg.dataLength = buf.getInt();
+            msg.dataCrc32 = buf.getInt();
+            msg.magic = buf.getInt();
+            // 验证magic
+            int expectedMagic = msg.command ^ 0xFFFFFFFF;
+            if (msg.magic != expectedMagic) {
+                logE(tag, "Magic验证失败! | cmd=0x" + Integer.toHexString(msg.command).toUpperCase() +
+                          " | 期望magic=0x" + Integer.toHexString(expectedMagic).toUpperCase() +
+                          " | 实际magic=0x" + Integer.toHexString(msg.magic).toUpperCase());
+                
+                // 尝试重新同步：搜索正确的magic
+                logW(tag, "尝试重新同步...");
+                // 简单处理：直接返回null，让上层重试
+                return null;
+            }
+            // 读取payload
+            if (msg.dataLength > 0 && msg.dataLength <= MAX_PAYLOAD) {
+                msg.payload = new byte[msg.dataLength];
+                in.readFully(msg.payload);
+            } else if (msg.dataLength > MAX_PAYLOAD) {
+                logW(tag, "Payload过大 | dataLen=" + msg.dataLength + " | 限制=" + MAX_PAYLOAD);
+                // 尝试读取并丢弃
+                byte[] discard = new byte[MAX_PAYLOAD];
+                int remaining = msg.dataLength;
+                while (remaining > 0) {
+                    int toRead = Math.min(remaining, MAX_PAYLOAD);
+                    int read = in.read(discard, 0, toRead);
+                    if (read < 0) break;
+                    remaining -= read;
+                }
+                msg.payload = null;
+            }
+            // 日志
+            String payloadPreview = "";
+            if (msg.payload != null && msg.payload.length > 0) {
+                if (msg.payload.length <= 100) {
+                    payloadPreview = new String(msg.payload, StandardCharsets.UTF_8)
+                        .replace("\0", "\\0").replace("\n", "\\n");
+                } else {
+                    payloadPreview = new String(msg.payload, 0, 100, StandardCharsets.UTF_8)
+                        .replace("\0", "\\0").replace("\n", "\\n") + "...";
+                }
+            }
+            logD(tag, "收到RAW | cmd=0x" + Integer.toHexString(msg.command).toUpperCase() +
+                       " | arg0=0x" + Integer.toHexString(msg.arg0) +
+                       " | arg1=0x" + Integer.toHexString(msg.arg1) +
+                       " | dataLen=" + msg.dataLength +
+                       " | data='" + payloadPreview + "'");
+            return msg;
+        } catch (EOFException e) {
+            logW(tag, "读取消息: 意外EOF");
+            return null;
+        } catch (SocketTimeoutException e) {
+            logW(tag, "读取消息: 超时");
+            throw e;
+        }
+    }
     /**
      * 自动生成密钥对连接
      */
@@ -410,125 +576,117 @@ public class AdbClient {
     }
 
     // ==================== ADB Shell执行 ====================
-    
+    // ==================== 修改 executeShell 中的消息方法 ====================
+    /**
+     * Shell通道使用的消息（带 localId/remoteId）
+     * 需要修改原来的 sendAdbMessage 来支持 arg0/arg1
+     */
+    private static void sendShellMessage(DataOutputStream out, int command, int arg0, int arg1, 
+                                          byte[] payload, String tag) throws IOException {
+        sendAdbRawMessage(out, command, arg0, arg1, payload, tag);
+    }
     /**
      * 执行ADB Shell命令（使用已建立的连接）
      * @param connection ADB连接对象
      * @param command 要执行的shell命令
      * @return Shell执行结果
      */
+    // ==================== 修改 executeShell ====================
     public static ShellResult executeShell(AdbConnection connection, String command) {
         String tag = "Shell[" + connection.serial + "]";
-        
         logI(tag, "========== 执行命令: '" + command + "' ==========");
-        
         try {
             if (connection.isClosed()) {
                 logE(tag, "连接已关闭，无法执行");
                 return new ShellResult(-1, "", "连接已关闭");
             }
-            
             DataOutputStream out = connection.output;
             DataInputStream in = connection.input;
-            
             // 1. 打开Shell通道
-            logD(tag, "打开Shell通道...");
-            String shellCmd = String.format(CMD_SHELL, command);
+            logD(tag, "打开Shell通道: shell:" + command);
+            String shellPayload = "shell:" + command + "\0";
             
             long t1 = System.currentTimeMillis();
-            sendAdbMessage(out, CMD_OPEN, 0x00000000, shellCmd.getBytes(StandardCharsets.UTF_8), tag);
-            
+            sendShellMessage(out, A_OPEN, 0x00000000, 0x00000000, 
+                             shellPayload.getBytes(StandardCharsets.UTF_8), tag);
             // 2. 等待OKAY
-            AdbMessage response = readAdbMessage(in, tag);
-            if (response == null || response.command != CMD_OKAY) {
-                logE(tag, "无法打开Shell通道 | response=" + 
-                         (response != null ? "0x" + Integer.toHexString(response.command) : "null"));
-                return new ShellResult(-1, "", "无法打开Shell通道");
+            AdbMessage response = readAdbMessageRaw(in, tag);
+            if (response == null || response.command != A_OKAY) {
+                String reason = response != null ? 
+                    "0x" + Integer.toHexString(response.command) : "null";
+                logE(tag, "无法打开Shell通道 | response=" + reason);
+                return new ShellResult(-1, "", "无法打开Shell通道: " + reason);
             }
-            
-            int localId = response.arg0;
-            logD(tag, "Shell通道已打开 | localId=" + localId + " | 耗时=" + (System.currentTimeMillis() - t1) + "ms");
-            
+            int remoteId = response.arg0;  // 服务端分配的 remote-id
+            int localId = response.arg1;   // 我们的 local-id
+            logD(tag, "Shell通道已打开 | localId=" + localId + " | remoteId=" + remoteId + 
+                       " | 耗时=" + (System.currentTimeMillis() - t1) + "ms");
             // 3. 读取输出数据
             StringBuilder stdout = new StringBuilder();
             StringBuilder stderr = new StringBuilder();
             boolean shellClosed = false;
             int writeCount = 0;
             long totalBytes = 0;
-            
             logD(tag, "开始读取输出...");
-            
             while (!shellClosed) {
-                response = readAdbMessage(in, tag);
+                response = readAdbMessageRaw(in, tag);
                 if (response == null) {
                     logW(tag, "读取到null消息，终止读取");
                     break;
                 }
-                
                 switch (response.command) {
-                    case CMD_WRTE:
+                    case A_WRTE:
                         writeCount++;
                         String data = new String(response.payload, StandardCharsets.UTF_8);
                         stdout.append(data);
                         totalBytes += response.payload.length;
-                        
                         if (writeCount <= 3 || writeCount % 50 == 0) {
-                            logD(tag, "收到数据块#" + writeCount + " | 大小=" + response.payload.length + 
+                            logD(tag, "收到数据块#" + writeCount + " | 大小=" + response.payload.length +
                                        " bytes | 累计=" + totalBytes + " bytes");
                         }
-                        
                         // 发送OKAY确认
-                        sendAdbMessage(out, CMD_OKAY, response.arg0, null, tag);
+                        sendShellMessage(out, A_OKAY, response.arg0, response.arg1, null, tag);
                         break;
-                        
-                    case CMD_CLSE:
+                    case A_CLSE:
                         shellClosed = true;
-                        logD(tag, "Shell通道关闭 | 总数据块=" + writeCount + 
+                        logD(tag, "Shell通道关闭 | 总数据块=" + writeCount +
                                    " | 总字节=" + totalBytes + " bytes");
                         // 发送CLSE确认
-                        sendAdbMessage(out, CMD_CLSE, response.arg0, null, tag);
+                        sendShellMessage(out, A_CLSE, response.arg0, response.arg1, null, tag);
                         break;
-                        
-                    case CMD_OKAY:
-                        logD(tag, "收到OKAY确认 | arg0=" + response.arg0);
+                    case A_OKAY:
+                        logD(tag, "收到OKAY确认 | localId=" + response.arg0 + 
+                                   " | remoteId=" + response.arg1);
                         break;
-                        
                     default:
                         if (response.payload != null) {
                             String errData = new String(response.payload, StandardCharsets.UTF_8);
                             stderr.append(errData);
-                            logW(tag, "收到未知响应 | command=0x" + 
-                                      Integer.toHexString(response.command).toUpperCase() + 
-                                      " | data=" + errData.substring(0, Math.min(100, errData.length())));
+                            logW(tag, "收到未知响应 | cmd=0x" +
+                                      Integer.toHexString(response.command).toUpperCase() +
+                                      " | data=" + 
+                                      errData.substring(0, Math.min(100, errData.length())));
                         }
                         break;
                 }
             }
-            
             // 4. 关闭本地通道
-            sendAdbMessage(out, CMD_CLSE, localId, null, tag);
-            
+            sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
             long elapsed = System.currentTimeMillis() - t1;
-            
-            // 输出结果摘要
             String stdoutStr = stdout.toString();
             String stderrStr = stderr.toString();
-            
-            logI(tag, "命令执行完成 | 耗时=" + elapsed + "ms | stdout=" + stdoutStr.length() + 
+            logI(tag, "命令执行完成 | 耗时=" + elapsed + "ms | stdout=" + stdoutStr.length() +
                      " bytes | stderr=" + stderrStr.length() + " bytes");
-            
             if (!stdoutStr.isEmpty() && stdoutStr.length() <= 200) {
                 logD(tag, "stdout: " + stdoutStr.trim());
             } else if (!stdoutStr.isEmpty()) {
-                logD(tag, "stdout(前200字符): " + stdoutStr.substring(0, Math.min(200, stdoutStr.length())).trim() + "...");
+                logD(tag, "stdout(前200字符): " + 
+                      stdoutStr.substring(0, Math.min(200, stdoutStr.length())).trim() + "...");
             }
-            
             if (!stderrStr.isEmpty()) {
                 logW(tag, "stderr: " + stderrStr.trim());
             }
-            
             return new ShellResult(0, stdoutStr, stderrStr);
-            
         } catch (SocketTimeoutException e) {
             logE(tag, "读取超时", e);
             return new ShellResult(-1, "", "读取超时: " + e.getMessage());
