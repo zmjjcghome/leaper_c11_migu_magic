@@ -82,7 +82,8 @@ public class MainActivity extends AppCompatActivity {
     // 记录最终成功的路径
     private String actualDexPath = null;
     private String actualApkPath = null;
-
+    private File actualSignedApkFile = null;  // 改为File对象
+    
     private ActivityResultLauncher<Intent> selectApkLauncher;
     private ActivityResultLauncher<Intent> manageStorageLauncher;
 
