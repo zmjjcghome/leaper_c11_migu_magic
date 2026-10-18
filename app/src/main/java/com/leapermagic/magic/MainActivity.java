@@ -57,7 +57,8 @@ public class MainActivity extends AppCompatActivity {
     private int adbdPort = -1;
     
     /** ADB 连接实例 */
-    private AdbConnection adbConnection;
+    //private AdbConnection adbConnection;
+    private AdbClient.AdbConnection adbConnection;
     
     private Uri selectedApkUri;
     private String targetPath;
@@ -84,7 +85,7 @@ public class MainActivity extends AppCompatActivity {
     private final Handler saveHandler = new Handler(Looper.getMainLooper());
     private final Runnable saveRunnable = () -> savePath(etTargetPath.getText().toString().trim());
     
-    private AdbClient.AdbConnection currentConnection;
+
     // ==================== 权限相关 ====================
     
     /**
@@ -103,7 +104,7 @@ public class MainActivity extends AppCompatActivity {
         Manifest.permission.WRITE_EXTERNAL_STORAGE,
         
         // 安装权限
-        Manifest.permission.REQUEST_INSTALL_PACKAGES,
+        // Manifest.permission.REQUEST_INSTALL_PACKAGES,
         
         // 设备信息
         Manifest.permission.READ_PHONE_STATE,
@@ -114,14 +115,14 @@ public class MainActivity extends AppCompatActivity {
      */
     private static final String[] ANDROID_11_PERMISSIONS = {
         Manifest.permission.MANAGE_EXTERNAL_STORAGE,
-        Manifest.permission.QUERY_ALL_PACKAGES,
+        // Manifest.permission.QUERY_ALL_PACKAGES,
     };
     
     /**
      * Android 13+ 的通知权限
      */
     private static final String[] ANDROID_13_PERMISSIONS = {
-        Manifest.permission.POST_NOTIFICATIONS,
+        // Manifest.permission.POST_NOTIFICATIONS,
     };
     // ==================== ActivityResult启动器 ====================
     
@@ -222,7 +223,7 @@ public class MainActivity extends AppCompatActivity {
             
             runOnUiThread(() -> {
                 if (result.success) {
-                    currentConnection = result.connection;
+                    adbConnection = result.connection;
                     appendLog("连接成功: " + result.message);
                 } else {
                     appendLog("连接失败: " + result.message);
@@ -317,8 +318,7 @@ public class MainActivity extends AppCompatActivity {
         checkAllPermissions();
         setupLogListener();
         
-        checkPort("127.0.0.1", 5555);
-        connectToDevice("127.0.0.1", 5555);
+        initAdbConnection();
     }
     // ==================== 权限管理 ====================
     
@@ -518,10 +518,11 @@ public class MainActivity extends AppCompatActivity {
      * 初始化：自动检测 adbd 端口并建立连接
      * 在 onCreate 或用户点击某个按钮时调用
      */
+    /**
     private void initAdbConnection() {
         //new Thread(() -> {
             appendLog("========== 开始检测 adbd ==========");
-    
+            
             // 自动检测端口
             adbdPort = AdbPortDetector.detect(-1, msg -> {
                 runOnUiThread(() -> appendLog("[检测] " + msg));
@@ -545,6 +546,36 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("[提示] 或通过 USB 执行: adb tcpip 5555");
             }
         //}).start();
+    }*/
+    private void initAdbConnection() {
+        //new Thread(() -> {
+        if (adbConnection == null) {
+            appendLog("========== 开始检测 adbd ==========");
+    
+            // 自动检测端口
+            adbdPort = AdbPortDetector.detect(-1, msg -> {
+                runOnUiThread(() -> appendLog("[检测] " + msg));
+            });
+    
+            if (adbdPort > 0) {
+                appendLog("[成功] 找到 adbd 端口: " + adbdPort);
+                // 建立持久连接
+                AdbClient.AdbConnectionResult result = AdbClient.connect(ip, port);
+
+                if (result.success) {
+                    adbConnection = result.connection;
+                    appendLog("连接成功: " + result.message);
+                    appendLog("[成功] 已连接到 adbd (端口 " + adbdPort + "):" + result.message);
+                } else {
+                    appendLog("[失败] 连接 adbd 失败: " + result.message);
+                }
+            } else {
+                appendLog("[失败] 未找到 adbd 监听端口");
+                appendLog("[提示] 请在设置中开启无线调试 (Android 11+)");
+                appendLog("[提示] 或通过 USB 执行: adb tcpip 5555");
+            }
+        //}).start();
+        }
     }
     
     // ============================================================
@@ -793,9 +824,9 @@ public class MainActivity extends AppCompatActivity {
         String cmd = "export CLASSPATH=" + dexPath + " && " +
                      "app_process /system/framework " + INSTALLER_CLASS + " " + apkPath;
 
-        checkPort("127.0.0.1", 5555);
+        //checkPort("127.0.0.1", 5555);
         // 然后再尝试连接
-        connectToDevice("127.0.0.1", 5555);
+        //connectToDevice("127.0.0.1", 5555);
         if (adbConnection == null ) {
             appendLog("========== 开始初始化adb ==========");
             initAdbConnection();
@@ -804,6 +835,7 @@ public class MainActivity extends AppCompatActivity {
         if (adbConnection != null && adbdPort > 0) {
             appendLog("[ADB] 使用 adbd shell 执行 (UID=2000)");
             try {
+                /** old execute
                 AdbConnection.ShellResult result = adbConnection.shell(cmd);
                 output.append("ExitCode=").append(result.exitCode).append("\n");
                 
@@ -813,6 +845,11 @@ public class MainActivity extends AppCompatActivity {
                 if (result.stderr != null && !result.stderr.isEmpty()) {
                     output.append("STDERR:\n").append(result.stderr);
                 }
+                */
+                //=====new shell execute =======
+                AdbClient.ShellResult result = 
+                        AdbClient.executeShell(adbConnection, cmd);
+                appendLog("执行结果:\n" + result.toString());
     
                 appendLog("[ADB] 退出码: " + result.exitCode);
                 if (result.isSuccess()) {
