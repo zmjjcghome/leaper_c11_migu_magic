@@ -934,8 +934,12 @@ public class MainActivity extends AppCompatActivity {
                 // 1. 读取本地文件
                 File localFile = new File(localPath);
                 if (!localFile.exists()) {
-                    appendLog("✗ 本地文件不存在: " + localPath);
-                    toast("文件不存在");
+                    appendLog(">>> 推送: ✗ 本地文件不存在: " + localPath);
+                    uiHandler.post(() -> {
+                        tvStatus.setText(">>> 推送: 文件不存在");
+                        btnExecuteInstall.setEnabled(true);
+                        Toast.makeText(MainActivity.this, ">>> 推送: 文件不存在 ", Toast.LENGTH_LONG).show();
+                    });
                     return;
                 }
     
@@ -971,16 +975,28 @@ public class MainActivity extends AppCompatActivity {
                     //         appendLog("STDERR:\n" + installResult.stderr.trim());
                     //     }
                     // }
-    
-                    toast("推送成功");
+                    uiHandler.post(() -> {
+                        tvStatus.setText(">>> 推送: 推送成功");
+                        btnExecuteInstall.setEnabled(true);
+                        Toast.makeText(MainActivity.this, ">>> 推送: 推送成功 ", Toast.LENGTH_LONG).show();
+                    });
                 } else {
-                    appendLog("✗ 推送失败: " + pushResult.stderr);
-                    toast("推送失败");
+                    appendLog(">>> 推送: ✗ 推送失败: " + pushResult.stderr);
+                    
+                    uiHandler.post(() -> {
+                        tvStatus.setText(">>> 推送: 推送失败");
+                        btnExecuteInstall.setEnabled(true);
+                        Toast.makeText(MainActivity.this, ">>> 推送: 推送失败 ", Toast.LENGTH_LONG).show();
+                    });
                 }
     
             } catch (Exception e) {
                 appendLog("✗ 异常: " + e.getMessage());
-                toast("异常: " + e.getMessage());
+                uiHandler.post(() -> {
+                    tvStatus.setText(">>> 推送: 异常: " + e.getMessage());
+                    btnExecuteInstall.setEnabled(true);
+                    Toast.makeText(MainActivity.this, ">>> 推送: 异常: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                });
             }
         }).start();
     }
