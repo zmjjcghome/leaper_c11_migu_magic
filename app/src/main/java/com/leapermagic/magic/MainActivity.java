@@ -253,7 +253,7 @@ public class MainActivity extends AppCompatActivity {
         tvStatus = findViewById(R.id.tv_status);
         
         // 初始状态：重签名相关按钮不可用
-        btnResignApk.setEnabled(false);
+        // btnResignApk.setEnabled(false);
         // btnInstallResigned.setEnabled(false);
         
         // 初始状态：安装按钮不可用
@@ -289,7 +289,7 @@ public class MainActivity extends AppCompatActivity {
                         actualApkPath = null;
                         actualSignedApkFile = null;
                         btnExecuteInstall.setEnabled(false);
-                        btnResignApk.setEnabled(true);
+                        // btnResignApk.setEnabled(true);
                         // btnInstallResigned.setEnabled(false);
                         appendLog("已选择 APK，可以进行重新签名或准备绕过安装");
                     }
@@ -326,7 +326,7 @@ public class MainActivity extends AppCompatActivity {
         // ====== 按钮2：执行安装 ======
         btnExecuteInstall.setOnClickListener(v -> executeInstall());
         // ====== 按钮3：重新签名 ======
-        btnResignApk.setOnClickListener(v -> resignSelectedApk());
+        // btnResignApk.setOnClickListener(v -> resignSelectedApk());
         // ====== 按钮4：安装重签名后的APK ======
         // btnInstallResigned.setOnClickListener(v -> installResignedApk());
         
