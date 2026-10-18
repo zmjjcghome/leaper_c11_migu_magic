@@ -143,7 +143,7 @@ public class MainActivity extends AppCompatActivity {
                     appendLog("✅ 所有权限已授予");
                     onPermissionsGranted();
                 } else {
-                    appendLog("⚠️ 部分权限被拒绝: " + deniedPermissions.size() + "项");
+                    appendLog("⚠️ 部分权限被拒绝: " + deniedPermissions.size() + "项," + String.join(deniedPermissions));
                     // 对关键权限被拒绝给出提示
                     if (deniedPermissions.contains(Manifest.permission.INTERNET)) {
                         showPermissionDialog("网络权限被拒绝，ADB通信功能将无法使用");
