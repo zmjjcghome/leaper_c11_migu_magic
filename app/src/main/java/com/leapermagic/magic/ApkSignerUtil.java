@@ -350,50 +350,49 @@ public class ApkSignerUtil {
 
     // ==================== 使用 Bouncy Castle 生成自签名证书 ====================
     private X509Certificate generateCertificateWithBC(KeyPair keyPair) throws Exception {
-        log("使用 Bouncy Castle 生成自签名 X.509 v3 证书...");
-
-        // 1. 准备证书基本信息
+        log("使用 Bouncy Castle 结构生成自签名 X.509 v3 证书...");
+    
         BigInteger serialNumber = new BigInteger(128, new SecureRandom());
-        Date notBefore = new Date(System.currentTimeMillis() - 86400000L); // 提前一天生效，避免时钟偏差
+        Date notBefore = new Date(System.currentTimeMillis() - 86400000L);
         Date notAfter = new Date(System.currentTimeMillis() + (long) CERT_VALIDITY_DAYS * 86400000L);
         
-        // 主题名称 (Subject DN) - Issuer 和 Subject 相同因为是自签名
         X500Name subject = new X500Name("CN=" + CERT_CN + ", OU=Dev, O=AutoSign, L=SH, ST=SH, C=CN");
         
-        // 2. 构建证书主体
         SubjectPublicKeyInfo publicKeyInfo = SubjectPublicKeyInfo.getInstance(
                 keyPair.getPublic().getEncoded()
         );
-
+    
         X509v3CertificateBuilder certBuilder = new X509v3CertificateBuilder(
-                subject,          // Issuer
+                subject,
                 serialNumber,
                 notBefore,
                 notAfter,
-                subject,          // Subject
+                subject,
                 publicKeyInfo
         );
-
-        // 3. 添加基本约束扩展 (非CA证书)
+    
         certBuilder.addExtension(
                 org.bouncycastle.asn1.x509.Extension.basicConstraints, 
                 true, 
                 new BasicConstraints(false)
         );
-
-        // 4. 使用私钥对证书进行签名
+    
+        // 【关键修复】不再强制指定 BC Provider，允许 Android 系统选择最佳实现
         JcaContentSignerBuilder signerBuilder = new JcaContentSignerBuilder("SHA256withRSA");
-        signerBuilder.setProvider(BouncyCastleProvider.PROVIDER_NAME); 
+        // 如果需要调试，可以打印可用提供者
+        Log.d(TAG, "Available providers: " + Arrays.toString(Security.getProviders()));
         
-        // 5. 生成证书对象
+        // 构建签名者
+        ContentSigner contentSigner = signerBuilder.build(keyPair.getPrivate());
+    
+        // 【关键修复】转换器也不强制指定 BC，避免类加载冲突
         JcaX509CertificateConverter converter = new JcaX509CertificateConverter();
-        converter.setProvider(BouncyCastleProvider.PROVIDER_NAME);
-
+        
         X509Certificate certificate = converter.getCertificate(
-                certBuilder.build(signerBuilder.build(keyPair.getPrivate()))
+                certBuilder.build(contentSigner)
         );
-
-        // 6. 加密并持久化证书
+    
+        // 加密并持久化
         byte[] encoded = certificate.getEncoded();
         keystorePrefs.edit().putString(KEY_ENCRYPTED_CERT, aesGcmEncrypt(encoded)).apply();
         
@@ -401,6 +400,7 @@ public class ApkSignerUtil {
         log("证书生成完毕, 有效期至: " + certificate.getNotAfter());
         return certificate;
     }
+
 
     // ==================== 验证 ====================
     private void verifySig(File apk) {
