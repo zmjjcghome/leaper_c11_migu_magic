@@ -2,7 +2,6 @@ package com.leapermagic.magic;
 
 import android.content.ContentResolver;
 import android.content.Context;
-import android.content.SharedPreferences;
 import android.net.Uri;
 import android.util.Base64;
 import android.util.Log;
@@ -20,8 +19,10 @@ import java.security.*;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.RSAPrivateKeySpec;
+import java.security.spec.RSAPublicKeySpec;
 import java.util.*;
-import java.lang.reflect.Method;
+
 import javax.security.auth.x500.X500Principal;
 
 public class ApkSignerUtil {
@@ -29,12 +30,12 @@ public class ApkSignerUtil {
     private static final String TAG = "ApkSignerUtil";
 
     private static final String PREFS_NAME = "apk_signer_keystore";
-    private static final String KEY_PRIVATE_KEY = "private_key_pkcs8";
-    private static final String KEY_CERTIFICATE = "certificate_x509";
+    private static final String KEY_MODULUS  = "rsa_modulus";
+    private static final String KEY_PRIV_EXP = "rsa_private_exp";
+    private static final String KEY_PUB_EXP  = "rsa_public_exp";
 
     private static final int CERT_VALIDITY_DAYS = 10950;
-    private static final String CERT_DN =
-            "CN=AutoSign, OU=Development, O=AutoSign, L=Unknown, ST=Unknown, C=CN";
+    private static final String CERT_CN = "AutoSign";
     private static final int KEY_SIZE = 2048;
 
     private final Context context;
@@ -48,8 +49,6 @@ public class ApkSignerUtil {
     }
 
     private SignLogCallback logCallback;
-
-    // ==================== 构造函数 ====================
 
     public ApkSignerUtil(Context context) {
         this.context = context.getApplicationContext();
@@ -67,463 +66,296 @@ public class ApkSignerUtil {
 
     private void log(String msg) {
         Log.d(TAG, msg);
-        if (logCallback != null) {
-            logCallback.onLog(msg);
-        }
+        if (logCallback != null) logCallback.onLog(msg);
     }
 
-    // ================================================================
-    //  公开方法
-    // ================================================================
+    // ==================== 公开 ====================
 
     public boolean hasExistingCertificate() {
-        return keystorePrefs.contains(KEY_PRIVATE_KEY)
-                && keystorePrefs.contains(KEY_CERTIFICATE);
+        return keystorePrefs.contains(KEY_MODULUS);
     }
 
     public String getCertificateInfo() {
         try {
             X509Certificate cert = getOrLoadCertificate();
             if (cert == null) return null;
-            StringBuilder sb = new StringBuilder();
-            sb.append("Subject: ").append(cert.getSubjectDN().getName()).append("\n");
-            sb.append("有效期至: ").append(cert.getNotAfter()).append("\n");
-            sb.append("序列号: ").append(cert.getSerialNumber().toString(16));
-            return sb.toString();
+            return "Subject: " + cert.getSubjectDN().getName()
+                    + "\n有效期至: " + cert.getNotAfter()
+                    + "\n序列号: " + cert.getSerialNumber().toString(16);
         } catch (Exception e) {
-            Log.e(TAG, "getCertificateInfo error", e);
             return null;
         }
     }
 
     public void deleteExistingCertificate() {
         keystorePrefs.edit()
-                .remove(KEY_PRIVATE_KEY)
-                .remove(KEY_CERTIFICATE)
+                .remove(KEY_MODULUS)
+                .remove(KEY_PRIV_EXP)
+                .remove(KEY_PUB_EXP)
                 .apply();
         cachedPrivateKey = null;
         cachedCertificate = null;
-        log("已删除存储的签名证书");
     }
 
     public boolean resignApk(ContentResolver contentResolver, Uri apkUri, File outputFile) {
-        log("========== 开始重新签名 APK (V1+V2+V3) ==========");
-        log("源APK: " + apkUri);
-        log("输出: " + outputFile.getAbsolutePath());
-
+        log("========== 签名开始 ==========");
         try {
-            log("加载签名证书...");
+            // 1. 加载/生成密钥和证书
             KeyPair keyPair = getOrCreateKeyPair();
             X509Certificate cert = getOrCreateCertificate(keyPair);
-            log("证书: " + cert.getSubjectDN().getName());
-            log("证书有效期至: " + cert.getNotAfter());
-            log("证书公钥算法: " + cert.getPublicKey().getAlgorithm());
-            log("私钥算法: " + keyPair.getPrivate().getAlgorithm());
+            log("证书: " + cert.getSubjectDN());
+            log("算法: " + keyPair.getPrivate().getAlgorithm() + " " + KEY_SIZE);
 
-            // ---- 签名前校验：用证书公钥验签一段测试数据 ----
-            try {
-                Signature verifySig = Signature.getInstance("SHA256withRSA");
-                verifySig.initSign(keyPair.getPrivate());
-                verifySig.update("test".getBytes());
-                byte[] testSig = verifySig.sign();
-                verifySig.initVerify(cert.getPublicKey());
-                verifySig.update("test".getBytes());
-                boolean ok = verifySig.verify(testSig);
-                log("密钥对校验: " + (ok ? "通过 ✅" : "失败 ❌"));
-                if (!ok) {
-                    log("私钥与证书不匹配！请删除证书重试。");
-                    deleteExistingCertificate();
-                    return false;
-                }
-            } catch (Exception e) {
-                log("密钥对校验异常: " + e.getMessage());
-                Log.e(TAG, "keypair check", e);
-            }
+            // 2. 准备文件
+            if (outputFile.getParentFile() != null) outputFile.getParentFile().mkdirs();
+            if (outputFile.exists()) outputFile.delete();
 
-            File parent = outputFile.getParentFile();
-            if (parent != null && !parent.exists()) {
-                parent.mkdirs();
-            }
-            if (outputFile.exists()) {
-                outputFile.delete();
-            }
-
-            log("读取原始APK...");
-            File tempInput = copyUriToTempFile(contentResolver, apkUri);
-            if (tempInput == null) {
-                log("无法读取原始APK");
+            File input = copyUriToTempFile(contentResolver, apkUri);
+            if (input == null || !isValidApk(input)) {
+                log("❌ 无法读取 APK");
                 return false;
             }
-            long inputSize = tempInput.length();
-            log("原始APK大小: " + inputSize + " bytes (" + (inputSize / 1024) + " KB)");
+            log("输入: " + input.length() + " bytes");
 
-            // 快速校验 APK 是否是有效 ZIP
-            if (!isValidApk(tempInput)) {
-                log("❌ 无效的 APK 文件（ZIP 头校验失败）");
-                tempInput.delete();
-                return false;
-            }
-            log("APK ZIP 头校验通过");
+            // 3. 签名
+            ApkSigner.SignerConfig config = new ApkSigner.SignerConfig.Builder(
+                    "AutoSign", keyPair.getPrivate(), Collections.singletonList(cert)).build();
 
-            log("执行 V1+V2+V3 签名...");
-            signApkWithGoogleLib(tempInput, outputFile, keyPair.getPrivate(), cert);
+            ApkSigner signer = new ApkSigner.Builder(Collections.singletonList(config))
+                    .setInputApk(input)
+                    .setOutputApk(outputFile)
+                    .setV1SigningEnabled(true)
+                    .setV2SigningEnabled(false)
+                    .setV3SigningEnabled(false)
+                    .build();
 
-            boolean success = outputFile.exists() && outputFile.length() > 0;
-            if (success) {
-                log("========== 签名成功 ==========");
-                log("输出大小: " + outputFile.length() + " bytes (" + (outputFile.length() / 1024) + " KB)");
-                verifySignature(outputFile);
-            } else {
-                log("========== 签名失败：输出文件为空或不存在 ==========");
-            }
+            signer.sign();
+            log("sign() 完成");
 
-            if (tempInput.exists()) tempInput.delete();
-            return success;
+            boolean ok = outputFile.exists() && outputFile.length() > 0;
+            log(ok ? "✅ 签名成功" : "❌ 输出为空");
+            if (ok) verifySig(outputFile);
+            if (input.exists()) input.delete();
+            return ok;
 
         } catch (Exception e) {
-            log("签名异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+            log("❌ " + e.getClass().getSimpleName() + ": " + e.getMessage());
             Log.e(TAG, "签名异常", e);
             return false;
         }
     }
 
-    public static File generateOutputFile(Context context, Uri apkUri) {
-        if (apkUri == null) return null;
-
-        File originalFile = resolveFileFromUri(apkUri);
-        if (originalFile != null && originalFile.exists() && originalFile.getParentFile() != null) {
-            String newName = insertResignedBeforeExtension(originalFile.getName());
-            return new File(originalFile.getParentFile(), newName);
-        }
-
-        String realPath = getRealPathFromUri(context, apkUri);
-        if (realPath != null) {
-            File f = new File(realPath);
-            if (f.getParentFile() != null) {
-                String newName = insertResignedBeforeExtension(f.getName());
-                return new File(f.getParentFile(), newName);
-            }
-        }
-
-        String fileName = getFileNameFromUri(context, apkUri);
-        if (fileName == null) fileName = "unknown.apk";
-        String newName = insertResignedBeforeExtension(fileName);
-        return new File(Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DOWNLOADS), newName);
-    }
-
-    private static String getRealPathFromUri(Context context, Uri uri) {
-        String path = null;
-        if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
-            try (Cursor cursor = context.getContentResolver().query(uri, null, null, null, null)) {
-                if (cursor != null && cursor.moveToFirst()) {
-                    int idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA);
-                    if (idx >= 0 && !cursor.isNull(idx)) {
-                        path = cursor.getString(idx);
-                    } else {
-                        int displayIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                        if (displayIdx >= 0) {
-                            path = cursor.getString(displayIdx);
-                        }
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
-        return path;
-    }
-
-    private static String getFileNameFromUri(Context context, Uri uri) {
-        String name = null;
-        if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
-            try (Cursor cursor = context.getContentResolver().query(uri, null, null, null, null)) {
-                if (cursor != null && cursor.moveToFirst()) {
-                    int idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                    if (idx >= 0) name = cursor.getString(idx);
-                }
-            } catch (Exception ignored) {}
-        }
-        if (name == null && uri.getPath() != null) {
-            name = new File(Uri.decode(uri.getPath())).getName();
-        }
-        return name != null ? name : "unsigned.apk";
-    }
-
-    // ================================================================
-    //  签名
-    // ================================================================
-
-    private void signApkWithGoogleLib(File inputFile, File outputFile,
-                                       PrivateKey privateKey, X509Certificate cert) throws Exception {
-        ApkSigner.SignerConfig signerConfig = new ApkSigner.SignerConfig.Builder(
-                "AutoSign",
-                privateKey,
-                Collections.singletonList(cert))
-                .build();
-
-        ApkSigner apkSigner = new ApkSigner.Builder(Collections.singletonList(signerConfig))
-                .setInputApk(inputFile)
-                .setOutputApk(outputFile)
-                .setV1SigningEnabled(true)
-                .setV2SigningEnabled(false)   // 先只开 V1，排他法定位问题
-                .setV3SigningEnabled(false)
-                .setCreatedBy("AutoSign-1.0 (Android)")
-                .build();
-
-        apkSigner.sign();
-        log("sign() 调用完成，无异常抛出");
-    }
-
-    private void verifySignature(File apkFile) {
-        try {
-            ApkVerifier verifier = new ApkVerifier.Builder(apkFile).build();
-            ApkVerifier.Result result = verifier.verify();
-            if (result.isVerified()) {
-                log("签名验证: 通过");
-                if (result.isVerifiedUsingV1Scheme()) log("  V1 (JAR签名): OK");
-                if (result.isVerifiedUsingV2Scheme()) log("  V2 (APK Signature v2): OK");
-                if (result.isVerifiedUsingV3Scheme()) log("  V3 (APK Signature v3): OK");
-            } else {
-                log("签名验证: 失败");
-                for (ApkVerifier.IssueWithParams issue : result.getErrors()) {
-                    log("  " + issue);
-                }
-            }
-        } catch (Exception e) {
-            log("签名验证异常: " + e.getMessage());
-        }
-    }
-
-    private boolean isValidApk(File file) {
-        try (FileInputStream fis = new FileInputStream(file)) {
-            byte[] header = new byte[4];
-            if (fis.read(header) != 4) return false;
-            // PK.. = 0x50 0x4B
-            return header[0] == 0x50 && header[1] == 0x4B;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    // ================================================================
-    //  密钥/证书持久化
-    // ================================================================
+    // ==================== 密钥生成 / 加载 ====================
 
     private synchronized KeyPair getOrCreateKeyPair() throws Exception {
-        PrivateKey pk = getOrLoadPrivateKey();
-        if (pk != null) {
-            X509Certificate cert = getOrLoadCertificate();
-            if (cert != null) {
-                log("从存储加载现有密钥对");
-                return new KeyPair(cert.getPublicKey(), pk);
-            }
+        KeyPair existing = loadKeyPair();
+        if (existing != null) {
+            log("使用已存储密钥");
+            return existing;
         }
 
-        log("生成新RSA密钥对 (" + KEY_SIZE + "位)...");
-        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
-        kpg.initialize(KEY_SIZE, new SecureRandom());
-        KeyPair kp = kpg.generateKeyPair();
+        log("生成 RSA " + KEY_SIZE + " 密钥...");
+        KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
+        gen.initialize(KEY_SIZE, new SecureRandom());
+        KeyPair kp = gen.generateKeyPair();
+
+        // 存 RSA 参数
+        java.security.interfaces.RSAPrivateKey priv = 
+                (java.security.interfaces.RSAPrivateKey) kp.getPrivate();
+        java.security.interfaces.RSAPublicKey pub = 
+                (java.security.interfaces.RSAPublicKey) kp.getPublic();
 
         keystorePrefs.edit()
-                .putString(KEY_PRIVATE_KEY,
-                        Base64.encodeToString(kp.getPrivate().getEncoded(), Base64.NO_WRAP))
+                .putString(KEY_MODULUS,  Base64.encodeToString(pub.getModulus().toByteArray(),   Base64.NO_WRAP))
+                .putString(KEY_PUB_EXP,   Base64.encodeToString(pub.getPublicExponent().toByteArray(), Base64.NO_WRAP))
+                .putString(KEY_PRIV_EXP,  Base64.encodeToString(priv.getPrivateExponent().toByteArray(), Base64.NO_WRAP))
                 .apply();
 
         cachedPrivateKey = kp.getPrivate();
-        log("密钥对已生成并存储");
         return kp;
     }
 
-    private synchronized X509Certificate getOrCreateCertificate(KeyPair keyPair) throws Exception {
-        X509Certificate existing = getOrLoadCertificate();
+    private KeyPair loadKeyPair() {
+        String modB64  = keystorePrefs.getString(KEY_MODULUS, null);
+        String pubB64  = keystorePrefs.getString(KEY_PUB_EXP, null);
+        String privB64 = keystorePrefs.getString(KEY_PRIV_EXP, null);
+        if (modB64 == null || pubB64 == null || privB64 == null) return null;
+
+        try {
+            BigInteger mod  = new BigInteger(1, Base64.decode(modB64,  Base64.NO_WRAP));
+            BigInteger pub  = new BigInteger(1, Base64.decode(pubB64,  Base64.NO_WRAP));
+            BigInteger priv = new BigInteger(1, Base64.decode(privB64, Base64.NO_WRAP));
+
+            KeyFactory kf = KeyFactory.getInstance("RSA");
+            PublicKey  pubKey  = kf.generatePublic(new RSAPublicKeySpec(mod, pub));
+            PrivateKey privKey = kf.generatePrivate(new RSAPrivateKeySpec(mod, priv));
+
+            KeyPair kp = new KeyPair(pubKey, privKey);
+            cachedPrivateKey = privKey;
+            return kp;
+        } catch (Exception e) {
+            Log.e(TAG, "加载密钥失败", e);
+            deleteExistingCertificate();
+            return null;
+        }
+    }
+
+    private synchronized X509Certificate getOrCreateCertificate(KeyPair kp) throws Exception {
+        X509Certificate existing = loadCertificate();
         if (existing != null) {
             try {
                 existing.checkValidity();
-                log("现有证书在有效期内");
                 return existing;
-            } catch (Exception e) {
-                log("证书已过期，重新生成");
-            }
+            } catch (Exception ignored) {}
         }
-
-        log("生成新自签名证书（纯 Android API，无 BouncyCastle）...");
-        X509Certificate newCert = generateCertificateNative(keyPair);
-
-        keystorePrefs.edit()
-                .putString(KEY_CERTIFICATE,
-                        Base64.encodeToString(newCert.getEncoded(), Base64.NO_WRAP))
-                .apply();
-
-        cachedCertificate = newCert;
-        log("证书已生成并存储");
-        return newCert;
+        return generateCertificateFor(kp);
     }
 
-    private PrivateKey getOrLoadPrivateKey() {
-        if (cachedPrivateKey != null) return cachedPrivateKey;
-
-        String b64 = keystorePrefs.getString(KEY_PRIVATE_KEY, null);
-        if (b64 == null) return null;
-
-        try {
-            byte[] bytes = Base64.decode(b64, Base64.NO_WRAP);
-            KeyFactory kf = KeyFactory.getInstance("RSA");
-            cachedPrivateKey = kf.generatePrivate(new PKCS8EncodedKeySpec(bytes));
-            return cachedPrivateKey;
-        } catch (Exception e) {
-            Log.e(TAG, "加载私钥失败", e);
-            keystorePrefs.edit().remove(KEY_PRIVATE_KEY).apply();
-            return null;
-        }
-    }
-
-    private X509Certificate getOrLoadCertificate() {
+    private X509Certificate loadCertificate() {
         if (cachedCertificate != null) {
-            try {
-                cachedCertificate.checkValidity();
-                return cachedCertificate;
-            } catch (Exception e) {
-                cachedCertificate = null;
-            }
+            try { cachedCertificate.checkValidity(); return cachedCertificate; }
+            catch (Exception e) { cachedCertificate = null; }
         }
+        return null;
+    }
 
-        String b64 = keystorePrefs.getString(KEY_CERTIFICATE, null);
-        if (b64 == null) return null;
+    // ==================== 自签名证书生成 ====================
 
+    /**
+     * 使用 sun.security.tools.keytool.CertAndKeyGen（Android 内部类）
+     */
+    @SuppressWarnings("unchecked")
+    private X509Certificate generateCertificateFor(KeyPair kp) throws Exception {
+        log("生成自签名证书...");
+
+        // CertAndKeyGen 在 Android 运行时可用（来自 sun.*）
+        Class<?> cakgClass = Class.forName("sun.security.tools.keytool.CertAndKeyGen");
+        Object cakg = cakgClass.getConstructor(String.class, String.class)
+                .newInstance("RSA", "SHA256WithRSA");
+
+        // 设置随机数
+        cakgClass.getMethod("setRandom", SecureRandom.class).invoke(cakg, new SecureRandom());
+
+        // 生成证书
+        cakgClass.getMethod("generate", int.class).invoke(cakg, KEY_SIZE);
+
+        // getSelfCertificate
+        long firstDate = System.currentTimeMillis() - 86400000L;
+        long lastDate  = firstDate + CERT_VALIDITY_DAYS * 86400000L;
+
+        X500Principal principal = new X500Principal("CN=" + CERT_CN + ", OU=Dev, O=AutoSign, L=SH, ST=SH, C=CN");
+
+        X509Certificate[] chain = (X509Certificate[]) cakgClass
+                .getMethod("getSelfCertificate", X500Principal.class, long.class)
+                .invoke(cakg, principal, lastDate);
+
+        X509Certificate cert = chain[0];
+        cachedCertificate = cert;
+        log("证书生成完毕, 有效期至: " + cert.getNotAfter());
+        return cert;
+    }
+
+    // ==================== 验证 ====================
+
+    private void verifySig(File apk) {
         try {
-            byte[] bytes = Base64.decode(b64, Base64.NO_WRAP);
-            CertificateFactory cf = CertificateFactory.getInstance("X.509");
-            cachedCertificate = (X509Certificate) cf.generateCertificate(
-                    new ByteArrayInputStream(bytes));
-            return cachedCertificate;
+            ApkVerifier.Result r = new ApkVerifier.Builder(apk).build().verify();
+            log("验证: " + (r.isVerified() ? "通过" : "失败"));
         } catch (Exception e) {
-            Log.e(TAG, "加载证书失败", e);
-            keystorePrefs.edit().remove(KEY_CERTIFICATE).apply();
-            return null;
+            log("验证异常: " + e.getMessage());
         }
     }
 
-    // ================================================================
-    //  纯 Android API 生成自签名证书（不需要 BouncyCastle）
-    // ================================================================
-
-    private X509Certificate generateCertificateNative(KeyPair keyPair) throws Exception {
-        // Android 有 sun.security.x509 内部类可用
-        // 它是 @hide 但运行时存在，反射调用
-        Class<?> certInfoClass = Class.forName("sun.security.x509.CertificateX509CertInfo");
-        Class<?> x509Class    = Class.forName("sun.security.x509.X509CertImpl");
-        Class<?> issuerClass  = Class.forName("sun.security.x509.X500Name");
-        Class<?> algoIdClass  = Class.forName("sun.security.x509.AlgorithmId");
-        Class<?> keyIdClass   = Class.forName("sun.security.x509.CertificateX509Key");
-        Class<?> validityClass= Class.forName("sun.security.x509.CertificateValidity");
-        Class<?> serialClass  = Class.forName("sun.security.x509.CertificateSerialNumber");
-        Class<?> issuerNameClass = Class.forName("sun.security.x509.CertificateIssuerName");
-        Class<?> subNameClass= Class.forName("sun.security.x509.CertificateSubjectName");
-        Class<?> signerClass  = Class.forName("sun.security.x509.X509CertImpl");
-
-        long now = System.currentTimeMillis();
-
-        Object issuerName = issuerClass.getConstructor(String.class).newInstance(CERT_DN);
-        Object subjectName = issuerName;
-
-        Object serialNum = serialClass.getConstructor(int.class)
-                .newInstance(new BigInteger(64, new SecureRandom()).intValue() & 0x7FFFFFFF);
-
-        Object validity = validityClass.getConstructor(Date.class, Date.class)
-                .newInstance(new Date(now - 86400000L),
-                             new Date(now + CERT_VALIDITY_DAYS * 86400000L));
-
-        Object algoId = algoIdClass.getMethod("get", String.class).invoke(null, "SHA256withRSA");
-        Object keyInfo = keyIdClass.getConstructor(PublicKey.class).newInstance(keyPair.getPublic());
-
-        Object info = certInfoClass.newInstance();
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(info, "version", 
-                Class.forName("sun.security.x509.CertificateVersion")
-                        .getConstructor(int.class).newInstance(2));
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(info, "serialNumber", serialNum);
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(info, "algorithmID", algoId);
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(info, "issuer", issuerName);
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(info, "validity", validity);
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(info, "subject", subjectName);
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(info, "key", keyInfo);
-
-        // 签名
-        Object certForSign = x509Class.getConstructor(certInfoClass).newInstance(info);
-        Method signMethod = x509Class.getMethod("sign", PrivateKey.class, String.class);
-        signMethod.invoke(certForSign, keyPair.getPrivate(), "SHA256withRSA");
-
-        byte[] encoded = (byte[]) x509Class.getMethod("getEncoded").invoke(certForSign);
-
-        CertificateFactory cf = CertificateFactory.getInstance("X.509");
-        return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(encoded));
+    private boolean isValidApk(File f) {
+        try (FileInputStream fis = new FileInputStream(f)) {
+            byte[] h = new byte[4];
+            return fis.read(h) == 4 && h[0] == 0x50 && h[1] == 0x4B;
+        } catch (Exception e) { return false; }
     }
 
-    // ================================================================
-    //  文件工具
-    // ================================================================
+    // ==================== 文件工具 ====================
+
+    private File copyUriToTempFile(ContentResolver cr, Uri uri) throws Exception {
+        InputStream is = cr.openInputStream(uri);
+        if (is == null) return null;
+        File tmp = File.createTempFile("apk_", ".apk", context.getCacheDir());
+        try (FileOutputStream fos = new FileOutputStream(tmp)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = is.read(buf)) != -1) fos.write(buf, 0, n);
+        }
+        is.close();
+        return tmp;
+    }
+
+    // ==================== generateOutputFile ====================
+
+    public static File generateOutputFile(Context context, Uri uri) {
+        if (uri == null) return null;
+
+        File f = resolveFileFromUri(uri);
+        if (f != null && f.exists() && f.getParentFile() != null)
+            return new File(f.getParentFile(), insertResigned(f.getName()));
+
+        String path = getRealPath(context, uri);
+        if (path != null) {
+            File pf = new File(path);
+            if (pf.getParentFile() != null)
+                return new File(pf.getParentFile(), insertResigned(pf.getName()));
+        }
+
+        String name = getFileName(context, uri);
+        if (name == null) name = "unknown.apk";
+        return new File(Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS), insertResigned(name));
+    }
+
+    private static String getRealPath(Context ctx, Uri uri) {
+        if (!ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) return null;
+        try (Cursor c = ctx.getContentResolver().query(uri, null, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int idx = c.getColumnIndex(MediaStore.MediaColumns.DATA);
+                if (idx >= 0 && !c.isNull(idx)) return c.getString(idx);
+                idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (idx >= 0) return c.getString(idx);
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private static String getFileName(Context ctx, Uri uri) {
+        String name = null;
+        if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+            try (Cursor c = ctx.getContentResolver().query(uri, null, null, null, null)) {
+                if (c != null && c.moveToFirst()) {
+                    int idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    if (idx >= 0) name = c.getString(idx);
+                }
+            } catch (Exception ignored) {}
+        }
+        if (name == null && uri.getPath() != null)
+            name = new File(Uri.decode(uri.getPath())).getName();
+        return name != null ? name : "unsigned.apk";
+    }
 
     private static File resolveFileFromUri(Uri uri) {
         if (uri == null) return null;
         String path = uri.getPath();
         if (path == null) return null;
-
         File f = new File(path);
         if (f.exists()) return f;
-
-        for (String p : new String[]{
-                "/storage/emulated/0/", "/sdcard/", "/storage/self/primary/"
-        }) {
-            if (path.startsWith(p)) return new File(path);
-        }
-
         if (path.startsWith("/document/")) {
             String[] parts = path.split(":");
             if (parts.length >= 2) {
-                File candidate = new File("/storage/emulated/0/" + parts[parts.length - 1]);
-                if (candidate.exists()) return candidate;
+                File c = new File("/storage/emulated/0/" + parts[parts.length - 1]);
+                if (c.exists()) return c;
             }
         }
         return null;
     }
 
-    private static String insertResignedBeforeExtension(String fileName) {
-        if (fileName == null || fileName.isEmpty()) return "resigned.apk";
-
-        int lastSep = Math.max(fileName.lastIndexOf('/'), fileName.lastIndexOf('\\'));
-        String dir = "";
-        String base = fileName;
-        if (lastSep >= 0) {
-            dir = fileName.substring(0, lastSep + 1);
-            base = fileName.substring(lastSep + 1);
-        }
-
-        int lastDot = base.lastIndexOf('.');
-        if (lastDot > 0) {
-            base = base.substring(0, lastDot) + "_resigned" + base.substring(lastDot);
-        } else {
-            base = base + "_resigned";
-        }
-        return dir + base;
-    }
-
-    private File copyUriToTempFile(ContentResolver cr, Uri uri) throws IOException {
-        InputStream is = null;
-        try {
-            is = cr.openInputStream(uri);
-            if (is == null) throw new IOException("无法打开Uri: " + uri);
-
-            File tmp = File.createTempFile("apk_input_", ".apk", context.getCacheDir());
-            try (FileOutputStream fos = new FileOutputStream(tmp)) {
-                byte[] buf = new byte[8192];
-                int len;
-                while ((len = is.read(buf)) != -1) {
-                    fos.write(buf, 0, len);
-                }
-            }
-            return tmp;
-        } finally {
-            if (is != null) {
-                try { is.close(); } catch (IOException ignored) {}
-            }
-        }
+    private static String insertResigned(String name) {
+        int dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(0, dot) + "_resigned" + name.substring(dot) : name + "_resigned";
     }
 }
