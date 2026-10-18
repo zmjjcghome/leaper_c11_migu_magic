@@ -445,8 +445,8 @@ public class MainActivity extends AppCompatActivity {
         String cmd = "export CLASSPATH=" + dexPath + " && " +
                      "app_process /system/framework " + INSTALLER_CLASS + " " + apkPath;
         // 对目标端口做诊断
-        String diag = diagnosePort("127.0.0.1", 5555);
-        appendLog(diag);
+        //String diag = diagnosePort("127.0.0.1", 5555);
+        //appendLog(diag);
         
         // 然后再尝试连接
         try {
