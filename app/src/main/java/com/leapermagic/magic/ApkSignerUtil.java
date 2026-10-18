@@ -3,65 +3,36 @@ package com.leapermagic.magic;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.net.Uri;
-import android.util.Base64;
 import android.util.Log;
 import android.database.Cursor;
 import android.os.Environment;
 import android.provider.OpenableColumns;
-import android.security.keystore.KeyGenParameterSpec;
-import android.security.keystore.KeyProperties;
 
 import com.android.apksig.ApkSigner;
 import com.android.apksig.ApkVerifier;
 
-import org.bouncycastle.asn1.x500.X500Name;
-import org.bouncycastle.asn1.x509.BasicConstraints;
-import org.bouncycastle.asn1.x509.SubjectPublicKeyInfo;
-import org.bouncycastle.cert.X509v3CertificateBuilder;
-import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
-import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import org.bouncycastle.operator.ContentSigner;
 
 import java.io.*;
-import java.math.BigInteger;
 import java.security.*;
-import java.security.cert.CertificateFactory;
+import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
-import java.security.spec.RSAPrivateKeySpec;
-import java.security.spec.RSAPublicKeySpec;
-import java.util.*;
-import android.content.SharedPreferences;
-import javax.crypto.Cipher;
-import javax.crypto.KeyGenerator;
-import javax.crypto.SecretKey;
-import javax.crypto.spec.GCMParameterSpec;
+import java.util.Collections;
+import java.util.Date;
 
 public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
-    private static final String PREFS_NAME = "apk_signer_keystore_secure";
     
-    // 存储键名
-    private static final String KEY_ENCRYPTED_RSA_MOD = "enc_rsa_mod";
-    private static final String KEY_ENCRYPTED_RSA_PUB_EXP = "enc_rsa_pub_exp";
-    private static final String KEY_ENCRYPTED_RSA_PRIV_EXP = "enc_rsa_priv_exp";
-    private static final String KEY_ENCRYPTED_CERT = "enc_x509_cert";
-    private static final String AES_KEY_ALIAS = "apk_signer_aes_key";
-
-    private static final int CERT_VALIDITY_DAYS = 10950; // 30年
-    private static final String CERT_CN = "AutoSign";
+    // 密钥库配置
+    private static final String KEYSTORE_FILENAME = "autosign.keystore";
+    private static final String KEYSTORE_PASSWORD = "changeit"; // 生产环境应更复杂或动态生成
+    private static final String KEY_ALIAS = "autosign_alias";
+    private static final String KEY_PASSWORD = "changeit";
     private static final int KEY_SIZE = 2048;
-    // Android KeyStore GCM 默认 IV 长度通常为 12 字节
-    private static final int AES_GCM_IV_LENGTH = 12;
-    private static final int AES_GCM_TAG_LENGTH = 16;
+    private static final int VALIDITY_DAYS = 10950; // 30年
 
     private final Context context;
-    private final SharedPreferences keystorePrefs;
-
-    private PrivateKey cachedPrivateKey;
-    private X509Certificate cachedCertificate;
-    private SecretKey cachedAesKey;
 
     public interface SignLogCallback {
         void onLog(String message);
@@ -70,14 +41,12 @@ public class ApkSignerUtil {
     private SignLogCallback logCallback;
 
     static {
-        // 注册 Bouncy Castle Provider
+        // 注册 Bouncy Castle Provider，用于支持 BKS 格式
         Security.addProvider(new BouncyCastleProvider());
     }
 
     public ApkSignerUtil(Context context) {
         this.context = context.getApplicationContext();
-        this.keystorePrefs = this.context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-        initAndroidKeyStoreAesKey();
     }
 
     public ApkSignerUtil(Context context, SignLogCallback callback) {
@@ -94,407 +63,242 @@ public class ApkSignerUtil {
         if (logCallback != null) logCallback.onLog(msg);
     }
 
-    // ==================== 公开接口 ====================
-
-    public boolean hasExistingCertificate() {
-        return keystorePrefs.contains(KEY_ENCRYPTED_RSA_MOD);
-    }
-
-    public String getCertificateInfo() {
-        try {
-            X509Certificate cert = getOrLoadCertificate();
-            if (cert == null) return null;
-            return "Subject: " + cert.getSubjectDN().getName()
-                    + "\n有效期至: " + cert.getNotAfter()
-                    + "\n序列号: " + cert.getSerialNumber().toString(16);
-        } catch (Exception e) {
-            Log.e(TAG, "获取证书信息失败", e);
-            return null;
-        }
-    }
-
-    public void deleteExistingCertificate() {
-        keystorePrefs.edit().clear().apply();
-        cachedPrivateKey = null;
-        cachedCertificate = null;
-        cachedAesKey = null;
-    }
-
+    /**
+     * 核心方法：对 APK 进行重签名
+     */
     public boolean resignApk(ContentResolver contentResolver, Uri apkUri, File outputFile) {
         log("========== 签名开始 ==========");
         try {
-            // 1. 加载/生成密钥和证书
-            KeyPair keyPair = getOrCreateKeyPair();
-            X509Certificate cert = getOrCreateCertificate(keyPair);
+            // 1. 确保密钥库存在并获取密钥
+            KeyStore keyStore = getOrCreateKeyStore();
+            PrivateKey privateKey = (PrivateKey) keyStore.getKey(KEY_ALIAS, KEY_PASSWORD.toCharArray());
+            Certificate[] certChain = keyStore.getCertificateChain(KEY_ALIAS);
+            
+            if (privateKey == null || certChain == null || certChain.length == 0) {
+                throw new IllegalStateException("无法从密钥库加载密钥或证书");
+            }
+            
+            X509Certificate cert = (X509Certificate) certChain[0];
+            log("使用密钥别名: " + KEY_ALIAS);
             log("证书主体: " + cert.getSubjectDN());
-            log("密钥算法: " + keyPair.getPrivate().getAlgorithm() + " " + KEY_SIZE);
 
-            // 2. 准备文件
+            // 2. 准备输入文件
             if (outputFile.getParentFile() != null && !outputFile.getParentFile().exists()) {
                 outputFile.getParentFile().mkdirs();
             }
             if (outputFile.exists()) outputFile.delete();
 
-            File input = copyUriToTempFile(contentResolver, apkUri);
-            if (input == null || !isValidApk(input)) {
-                log("❌ 无法读取或无效的 APK");
+            File inputApk = copyUriToTempFile(contentResolver, apkUri);
+            if (inputApk == null || !inputApk.exists() || inputApk.length() == 0) {
+                log("❌ 无法读取输入 APK");
                 return false;
             }
-            log("输入文件大小: " + input.length() + " bytes");
+            log("输入文件大小: " + inputApk.length() + " bytes");
 
-            // 3. 配置签名器：开启 V1 + V2 签名以兼容 Android 9+
-            ApkSigner.SignerConfig config = new ApkSigner.SignerConfig.Builder(
-                    "AutoSign", keyPair.getPrivate(), Collections.singletonList(cert)).build();
+            // 3. 配置 ApkSigner
+            // 注意：ApkSigner 需要 List<Certificate> 而不是数组
+            java.util.List<Certificate> certList = java.util.Arrays.asList(certChain);
+            
+            ApkSigner.SignerConfig signerConfig = new ApkSigner.SignerConfig.Builder(
+                    "AutoSign", 
+                    privateKey, 
+                    certList
+            ).build();
 
-            ApkSigner signer = new ApkSigner.Builder(Collections.singletonList(config))
-                    .setInputApk(input)
+            ApkSigner apkSigner = new ApkSigner.Builder(Collections.singletonList(signerConfig))
+                    .setInputApk(inputApk)
                     .setOutputApk(outputFile)
-                    .setV1SigningEnabled(true)
-                    .setV2SigningEnabled(true)
-                    .setV3SigningEnabled(false) 
+                    .setV1SigningEnabled(true)  // 兼容旧版本
+                    .setV2SigningEnabled(true)  // Android 7.0+ 必需
+                    .setV3SigningEnabled(false) // 可选，通常 V2 足够
                     .build();
 
-            signer.sign();
+            // 4. 执行签名
+            apkSigner.sign();
             log("ApkSigner.sign() 执行完成");
 
-            boolean ok = outputFile.exists() && outputFile.length() > 0;
-            log(ok ? "✅ 签名成功" : "❌ 输出文件为空");
-            
-            if (ok) {
-                verifySig(outputFile);
+            // 5. 验证结果
+            boolean success = outputFile.exists() && outputFile.length() > 0;
+            if (success) {
+                log("✅ 签名成功: " + outputFile.getAbsolutePath());
+                verifyApkSignature(outputFile);
+            } else {
+                log("❌ 签名失败：输出文件为空或不存在");
             }
-            
+
             // 清理临时文件
-            if (input.exists()) input.delete();
-            return ok;
+            if (inputApk.exists()) inputApk.delete();
+            
+            return success;
 
         } catch (Exception e) {
-            log("❌ 签名异常: " + e.getClass().getSimpleName() + ": " + e.getMessage());
-            Log.e(TAG, "签名详细异常", e);
+            log("❌ 签名异常: " + e.getMessage());
+            Log.e(TAG, "签名详细错误", e);
             return false;
         }
     }
 
-    // ==================== AndroidKeyStore 安全AES密钥初始化 ====================
-    private void initAndroidKeyStoreAesKey() {
-        try {
-            KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
-            keyStore.load(null);
-            if (!keyStore.containsAlias(AES_KEY_ALIAS)) {
-                KeyGenerator keyGenerator = KeyGenerator.getInstance(
-                        KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
-                KeyGenParameterSpec spec = new KeyGenParameterSpec.Builder(
-                        AES_KEY_ALIAS,
-                        KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
-                        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                        .build();
-                keyGenerator.init(spec);
-                keyGenerator.generateKey();
-                log("AndroidKeyStore AES密钥生成成功");
+    /**
+     * 获取或创建标准的 BKS 密钥库
+     */
+    private synchronized KeyStore getOrCreateKeyStore() throws Exception {
+        File ksFile = new File(context.getFilesDir(), KEYSTORE_FILENAME);
+        KeyStore keyStore = KeyStore.getInstance("BKS", "BC");
+
+        if (ksFile.exists()) {
+            // 加载现有密钥库
+            try (FileInputStream fis = new FileInputStream(ksFile)) {
+                keyStore.load(fis, KEYSTORE_PASSWORD.toCharArray());
             }
-            KeyStore.SecretKeyEntry entry = (KeyStore.SecretKeyEntry) keyStore.getEntry(AES_KEY_ALIAS, null);
-            if (entry != null) {
-                cachedAesKey = entry.getSecretKey();
+            // 验证别名是否存在
+            if (!keyStore.containsAlias(KEY_ALIAS)) {
+                log("密钥库存在但别名缺失，重新生成密钥");
+                generateNewKey(keyStore, ksFile);
             } else {
-                throw new RuntimeException("无法从AndroidKeyStore获取AES密钥");
+                log("加载现有密钥库");
             }
-        } catch (Exception e) {
-            throw new RuntimeException("AndroidKeyStore初始化失败", e);
+        } else {
+            // 创建新密钥库
+            log("创建新的 BKS 密钥库");
+            keyStore.load(null, null);
+            generateNewKey(keyStore, ksFile);
         }
-    }
-
-    // ==================== 修复后的 AES-GCM 加解密 ====================
-    
-    /**
-     * 加密：让 Android KeyStore 自动生成 IV
-     */
-    private String aesGcmEncrypt(byte[] plainData) throws Exception {
-        if (cachedAesKey == null) initAndroidKeyStoreAesKey();
         
-        // 注意：初始化时不传入 GCMParameterSpec，让系统自动生成 IV
-        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        cipher.init(Cipher.ENCRYPT_MODE, cachedAesKey);
-        
-        // 获取系统自动生成的 IV
-        byte[] iv = cipher.getIV();
-        byte[] encrypted = cipher.doFinal(plainData);
-        
-        // 组合 IV + 密文
-        byte[] ivAndEncrypted = new byte[iv.length + encrypted.length];
-        System.arraycopy(iv, 0, ivAndEncrypted, 0, iv.length);
-        System.arraycopy(encrypted, 0, ivAndEncrypted, iv.length, encrypted.length);
-        
-        return Base64.encodeToString(ivAndEncrypted, Base64.NO_WRAP);
+        return keyStore;
     }
 
     /**
-     * 解密：从数据头部提取 IV
+     * 生成新的 RSA 密钥对并存入密钥库
      */
-    private byte[] aesGcmDecrypt(String encryptedB64) throws Exception {
-        if (cachedAesKey == null) initAndroidKeyStoreAesKey();
-        
-        byte[] ivAndEncrypted = Base64.decode(encryptedB64, Base64.NO_WRAP);
-        if (ivAndEncrypted.length < AES_GCM_IV_LENGTH) {
-            throw new IllegalArgumentException("Invalid encrypted data length");
-        }
-        
-        // 提取 IV
-        byte[] iv = Arrays.copyOfRange(ivAndEncrypted, 0, AES_GCM_IV_LENGTH);
-        // 提取密文
-        byte[] ciphertext = Arrays.copyOfRange(ivAndEncrypted, AES_GCM_IV_LENGTH, ivAndEncrypted.length);
+    private void generateNewKey(KeyStore keyStore, File ksFile) throws Exception {
+        // 使用 KeyPairGenerator 生成标准 RSA 密钥
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
+        kpg.initialize(KEY_SIZE);
+        KeyPair kp = kpg.generateKeyPair();
 
-        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
-        // 解密时必须传入 IV
-        GCMParameterSpec spec = new GCMParameterSpec(AES_GCM_TAG_LENGTH * 8, iv);
-        cipher.init(Cipher.DECRYPT_MODE, cachedAesKey, spec);
+        // 生成自签名证书 (使用简单的 Java API，不依赖 BC 的复杂构建器以避免 Provider 问题)
+        // 注意：为了简化，这里使用 sun.security 的替代方案或者简单的自签名逻辑
+        // 由于 Android 上生成自签名证书较复杂，我们使用一个简化的方法：
+        // 实际上，ApkSigner 只需要一个有效的 X509Certificate。
+        // 我们可以使用 Bouncy Castle 来生成这个证书，但只用于初始生成，之后存储在 KS 中。
         
-        return cipher.doFinal(ciphertext);
+        X509Certificate cert = generateSelfSignedCert(kp);
+        
+        // 存入密钥库
+        keyStore.setKeyEntry(
+                KEY_ALIAS, 
+                kp.getPrivate(), 
+                KEY_PASSWORD.toCharArray(), 
+                new Certificate[]{cert}
+        );
+
+        // 保存密钥库到文件
+        try (FileOutputStream fos = new FileOutputStream(ksFile)) {
+            keyStore.store(fos, KEYSTORE_PASSWORD.toCharArray());
+        }
+        log("新密钥对已生成并保存");
     }
 
-    // ==================== 密钥生成 / 加载（安全加密存储） ====================
-    private synchronized KeyPair getOrCreateKeyPair() throws Exception {
-        KeyPair existing = loadKeyPair();
-        if (existing != null) {
-            log("使用已存储的RSA密钥对");
-            return existing;
-        }
-
-        log("生成新的 RSA " + KEY_SIZE + " 密钥对...");
-        KeyPairGenerator gen = KeyPairGenerator.getInstance("RSA");
-        gen.initialize(KEY_SIZE, new SecureRandom());
-        KeyPair kp = gen.generateKeyPair();
-
-        // 提取参数并加密存储
-        java.security.interfaces.RSAPrivateKey priv = (java.security.interfaces.RSAPrivateKey) kp.getPrivate();
-        java.security.interfaces.RSAPublicKey pub = (java.security.interfaces.RSAPublicKey) kp.getPublic();
-
-        keystorePrefs.edit()
-                .putString(KEY_ENCRYPTED_RSA_MOD, aesGcmEncrypt(pub.getModulus().toByteArray()))
-                .putString(KEY_ENCRYPTED_RSA_PUB_EXP, aesGcmEncrypt(pub.getPublicExponent().toByteArray()))
-                .putString(KEY_ENCRYPTED_RSA_PRIV_EXP, aesGcmEncrypt(priv.getPrivateExponent().toByteArray()))
-                .apply();
-
-        cachedPrivateKey = kp.getPrivate();
-        return kp;
-    }
-
-    private KeyPair loadKeyPair() {
-        String modB64 = keystorePrefs.getString(KEY_ENCRYPTED_RSA_MOD, null);
-        String pubB64 = keystorePrefs.getString(KEY_ENCRYPTED_RSA_PUB_EXP, null);
-        String privB64 = keystorePrefs.getString(KEY_ENCRYPTED_RSA_PRIV_EXP, null);
+    /**
+     * 使用 Bouncy Castle 生成自签名证书 (仅用于初始化密钥库)
+     * 这里我们尽量使用标准 JCA，如果必须用 BC，确保不冲突
+     */
+    private X509Certificate generateSelfSignedCert(KeyPair kp) throws Exception {
+        // 为了避开 BC Provider 的签名算法查找问题，我们使用 Android 原生的 CertificateFactory 
+        // 但 Android 原生不支持直接生成自签名证书。
+        // 因此，我们必须使用 BC 来生成证书对象，但签名时使用标准算法名称。
         
-        if (modB64 == null || pubB64 == null || privB64 == null) return null;
-
-        try {
-            BigInteger mod = new BigInteger(1, aesGcmDecrypt(modB64));
-            BigInteger pubExp = new BigInteger(1, aesGcmDecrypt(pubB64));
-            BigInteger privExp = new BigInteger(1, aesGcmDecrypt(privB64));
-
-            KeyFactory kf = KeyFactory.getInstance("RSA");
-            PublicKey pubKey = kf.generatePublic(new RSAPublicKeySpec(mod, pubExp));
-            PrivateKey privKey = kf.generatePrivate(new RSAPrivateKeySpec(mod, privExp));
-
-            KeyPair kp = new KeyPair(pubKey, privKey);
-            cachedPrivateKey = privKey;
-            return kp;
-        } catch (Exception e) {
-            Log.e(TAG, "加载密钥失败，可能数据损坏或密钥不匹配", e);
-            deleteExistingCertificate(); // 清除损坏的数据
-            return null;
-        }
-    }
-
-    private synchronized X509Certificate getOrCreateCertificate(KeyPair kp) throws Exception {
-        X509Certificate existing = getOrLoadCertificate();
-        if (existing != null) {
-            try {
-                existing.checkValidity();
-                // 简单校验公钥是否匹配当前加载的私钥对应的公钥
-                if (existing.getPublicKey().equals(kp.getPublic())) {
-                    log("使用已存储且有效的证书");
-                    return existing;
-                } else {
-                    log("证书公钥与当前密钥不匹配，重新生成证书");
-                }
-            } catch (Exception ignored) {
-                log("证书已过期或无效，重新生成");
-            }
-        }
-        return generateCertificateWithBC(kp);
-    }
-
-    private X509Certificate getOrLoadCertificate() {
-        if (cachedCertificate != null) {
-            try { 
-                cachedCertificate.checkValidity(); 
-                return cachedCertificate; 
-            } catch (Exception e) { 
-                cachedCertificate = null; 
-            }
-        }
-        
-        String certB64 = keystorePrefs.getString(KEY_ENCRYPTED_CERT, null);
-        if (certB64 != null) {
-            try {
-                byte[] certBytes = aesGcmDecrypt(certB64);
-                CertificateFactory cf = CertificateFactory.getInstance("X.509");
-                X509Certificate cert = (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certBytes));
-                cachedCertificate = cert;
-                return cert;
-            } catch (Exception e) {
-                Log.e(TAG, "加载持久化证书失败", e);
-            }
-        }
-        return null;
-    }
-
-    // ==================== 使用 Bouncy Castle 生成自签名证书 ====================
-    private X509Certificate generateCertificateWithBC(KeyPair keyPair) throws Exception {
-        log("使用 Bouncy Castle 结构生成自签名 X.509 v3 证书...");
-    
-        BigInteger serialNumber = new BigInteger(128, new SecureRandom());
+        // 引入 BC 的证书生成器
+        org.bouncycastle.asn1.x500.X500Name subject = new org.bouncycastle.asn1.x500.X500Name("CN=AutoSign, OU=Dev, O=AutoSign, C=CN");
+        java.math.BigInteger serial = java.math.BigInteger.valueOf(System.currentTimeMillis());
         Date notBefore = new Date(System.currentTimeMillis() - 86400000L);
-        Date notAfter = new Date(System.currentTimeMillis() + (long) CERT_VALIDITY_DAYS * 86400000L);
+        Date notAfter = new Date(System.currentTimeMillis() + (long) VALIDITY_DAYS * 86400000L);
         
-        X500Name subject = new X500Name("CN=" + CERT_CN + ", OU=Dev, O=AutoSign, L=SH, ST=SH, C=CN");
+        org.bouncycastle.cert.X509v3CertificateBuilder certBuilder = 
+                new org.bouncycastle.cert.X509v3CertificateBuilder(
+                        subject, serial, notBefore, notAfter, subject, 
+                        org.bouncycastle.asn1.x509.SubjectPublicKeyInfo.getInstance(kp.getPublic().getEncoded())
+                );
         
-        SubjectPublicKeyInfo publicKeyInfo = SubjectPublicKeyInfo.getInstance(
-                keyPair.getPublic().getEncoded()
-        );
-    
-        X509v3CertificateBuilder certBuilder = new X509v3CertificateBuilder(
-                subject,
-                serialNumber,
-                notBefore,
-                notAfter,
-                subject,
-                publicKeyInfo
-        );
-    
-        certBuilder.addExtension(
-                org.bouncycastle.asn1.x509.Extension.basicConstraints, 
-                true, 
-                new BasicConstraints(false)
-        );
-    
-        // 【关键修复】不再强制指定 BC Provider，允许 Android 系统选择最佳实现
-        JcaContentSignerBuilder signerBuilder = new JcaContentSignerBuilder("SHA256withRSA");
-        // 如果需要调试，可以打印可用提供者
-        Log.d(TAG, "Available providers: " + Arrays.toString(Security.getProviders()));
+        // 关键点：使用 "SHA256withRSA" 并且不指定 Provider，让 JCA 自动选择
+        // 在 Android 上，这通常会路由到 AndroidOpenSSL 或 Conscrypt，它们支持 RSA 签名
+        org.bouncycastle.operator.ContentSigner signer = new org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withRSA")
+                .build(kp.getPrivate());
         
-        // 构建签名者
-        ContentSigner contentSigner = signerBuilder.build(keyPair.getPrivate());
-    
-        // 【关键修复】转换器也不强制指定 BC，避免类加载冲突
-        JcaX509CertificateConverter converter = new JcaX509CertificateConverter();
+        org.bouncycastle.cert.X509CertificateHolder certHolder = certBuilder.build(signer);
         
-        X509Certificate certificate = converter.getCertificate(
-                certBuilder.build(contentSigner)
-        );
-    
-        // 加密并持久化
-        byte[] encoded = certificate.getEncoded();
-        keystorePrefs.edit().putString(KEY_ENCRYPTED_CERT, aesGcmEncrypt(encoded)).apply();
-        
-        cachedCertificate = certificate;
-        log("证书生成完毕, 有效期至: " + certificate.getNotAfter());
-        return certificate;
+        // 转换为 Java 标准 Certificate
+        return new org.bouncycastle.cert.jcajce.JcaX509CertificateConverter()
+                .setProvider("BC") // 这里仅用于转换格式，不涉及签名运算
+                .getCertificate(certHolder);
     }
 
-
-    // ==================== 验证 ====================
-    private void verifySig(File apk) {
+    /**
+     * 验证 APK 签名
+     */
+    private void verifyApkSignature(File apkFile) {
         try {
-            ApkVerifier.Result r = new ApkVerifier.Builder(apk).build().verify();
-            if (r.isVerified()) {
+            ApkVerifier.Result result = new ApkVerifier.Builder(apkFile).build().verify();
+            if (result.isVerified()) {
                 log("✅ APK 签名验证通过");
             } else {
                 log("❌ APK 签名验证失败");
-                for (ApkVerifier.IssueWithParams issue : r.getErrors()) {
-                    log("错误详情: " + issue);
+                for (ApkVerifier.IssueWithParams issue : result.getErrors()) {
+                    log("错误: " + issue);
                 }
             }
         } catch (Exception e) {
-            log("验证过程异常: " + e.getMessage());
+            log("验证过程出错: " + e.getMessage());
         }
     }
 
-    private boolean isValidApk(File f) {
-        try (FileInputStream fis = new FileInputStream(f)) {
-            byte[] h = new byte[4];
-            int read = fis.read(h);
-            // ZIP 文件头 PK..
-            return read == 4 && h[0] == 0x50 && h[1] == 0x4B;
-        } catch (Exception e) { 
-            return false; 
+    /**
+     * 将 Uri 复制到临时文件
+     */
+    private File copyUriToTempFile(ContentResolver cr, Uri uri) throws IOException {
+        InputStream is = cr.openInputStream(uri);
+        if (is == null) return null;
+        
+        File tempFile = File.createTempFile("apk_input_", ".apk", context.getCacheDir());
+        try (FileOutputStream fos = new FileOutputStream(tempFile)) {
+            byte[] buffer = new byte[8192];
+            int len;
+            while ((len = is.read(buffer)) != -1) {
+                fos.write(buffer, 0, len);
+            }
+        } finally {
+            is.close();
         }
+        return tempFile;
     }
-
-    // ==================== 文件工具 ====================
-    private File copyUriToTempFile(ContentResolver cr, Uri uri) throws Exception {
-        try (InputStream is = cr.openInputStream(uri)) {
-            if (is == null) return null;
-            // 在缓存目录创建临时文件
-            File tmp = File.createTempFile("apk_unsigned_", ".apk", context.getCacheDir());
-            try (FileOutputStream fos = new FileOutputStream(tmp)) {
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = is.read(buf)) != -1) {
-                    fos.write(buf, 0, n);
+    
+    /**
+     * 获取输出文件路径
+     */
+    public static File getOutputFile(Context context, Uri sourceUri) {
+        String fileName = "signed_app.apk";
+        if (sourceUri != null) {
+            String path = sourceUri.getPath();
+            if (path != null) {
+                int lastSlash = path.lastIndexOf('/');
+                if (lastSlash != -1) {
+                    String name = path.substring(lastSlash + 1);
+                    if (name.endsWith(".apk")) {
+                        fileName = name.replace(".apk", "_signed.apk");
+                    } else {
+                        fileName = name + "_signed.apk";
+                    }
                 }
             }
-            return tmp;
-        }
-    }
-
-    // ==================== 输出文件生成（兼容分区存储） ====================
-    public static File generateOutputFile(Context context, Uri uri) {
-        if (uri == null) return null;
-
-        String name = getFileName(context, uri);
-        if (name == null) name = "unknown.apk";
-        
-        // 优先使用应用专属外部存储目录，无需权限且兼容性好
-        File outputDir;
-        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
-            outputDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "SignedApk");
-        } else {
-            //  fallback to internal files dir if external storage is not available
-            outputDir = new File(context.getFilesDir(), "SignedApk");
         }
         
+        File dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        if (dir == null) {
+            dir = context.getFilesDir();
+        }
+        File outputDir = new File(dir, "SignedApks");
         if (!outputDir.exists()) outputDir.mkdirs();
-        return new File(outputDir, insertResigned(name));
-    }
-
-    private static String getFileName(Context ctx, Uri uri) {
-        String name = null;
-        if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
-            try (Cursor c = ctx.getContentResolver().query(uri, null, null, null, null)) {
-                if (c != null && c.moveToFirst()) {
-                    int idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                    if (idx >= 0) name = c.getString(idx);
-                }
-            } catch (Exception ignored) {}
-        }
-        if (name == null && uri.getPath() != null) {
-            String path = uri.getPath();
-            int lastSlash = path.lastIndexOf('/');
-            if (lastSlash != -1) {
-                name = path.substring(lastSlash + 1);
-            } else {
-                name = path;
-            }
-        }
-        return (name != null && !name.isEmpty()) ? name : "unsigned.apk";
-    }
-
-    private static String insertResigned(String name) {
-        int dot = name.lastIndexOf('.');
-        if (dot > 0) {
-            return name.substring(0, dot) + "_resigned" + name.substring(dot);
-        }
-        return name + "_resigned.apk";
+        
+        return new File(outputDir, fileName);
     }
 }
