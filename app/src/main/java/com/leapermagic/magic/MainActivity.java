@@ -449,8 +449,13 @@ public class MainActivity extends AppCompatActivity {
         appendLog(diag);
         
         // 然后再尝试连接
-        adbConnection.connect("127.0.0.1", 5555, 5000);
-                
+        try {
+            adbConnection.connect("127.0.0.1", 5555, 5000);
+        } catch (IOException e) {
+            appendLog("[ADB] 执行异常: " + e.getMessage());
+            // ADB 连接可能已断开，回退到 sh
+            appendLog("[ADB] 回退到普通 sh 执行...");
+        }
         if (adbConnection == null ) {
             appendLog("========== 开始初始化adb ==========");
             initAdbConnection();
@@ -533,9 +538,9 @@ public class MainActivity extends AppCompatActivity {
      */
     private void closeAdbConnection() {
         if (adbConnection != null) {
-            try {
+            //try {
                 adbConnection.close();
-            } catch (IOException ignored) {}
+            //} catch (IOException ignored) {}
             adbConnection = null;
         }
     }
