@@ -870,7 +870,7 @@ public class MainActivity extends AppCompatActivity {
                 if (finalResult.isEmpty()) finalResult = "Success (no output)";
                 return finalResult;
     
-            } catch (IOException e) {
+            } catch (Exception e) {
                 appendLog("[ADB] 执行异常: " + e.getMessage());
                 // ADB 连接可能已断开，回退到 sh
                 appendLog("[ADB] 回退到普通 sh 执行...");
@@ -917,7 +917,7 @@ public class MainActivity extends AppCompatActivity {
         if (adbConnection != null) {
             try {
                 adbConnection.close();
-            } catch (IOException ignored) {}
+            } catch (Exception ignored) {}
             adbConnection = null;
         }
     }
