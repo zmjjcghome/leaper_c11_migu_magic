@@ -363,7 +363,7 @@ public class MainActivity extends AppCompatActivity {
         
         // 2. 请求权限
         if (!permissionsToRequest.isEmpty()) {
-            appendLog("📋 需要请求 " + permissionsToRequest.size() + " 项权限");
+            appendLog("📋 需要请求 " + permissionsToRequest.size() + " 项权限[" + String.join(", ", permissionsToRequest)+"]");
             
             // 检查是否有"不再询问"的权限
             boolean hasDeniedForever = false;
