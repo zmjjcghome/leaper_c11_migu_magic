@@ -331,10 +331,19 @@ public class MainActivity extends AppCompatActivity {
         // btnInstallResigned.setOnClickListener(v -> installResignedApk());
         
         // 初始化签名工具，设置日志回调
-        apkSignerUtil = new ApkSignerUtil(this, new ApkSignerUtil.SignLogCallback() {
+        // apkSignerUtil = new ApkSignerUtil(this, new ApkSignerUtil.SignLogCallback() {
+        //     @Override
+        //     public void onLog(String message) {
+        //         appendLog("[签名] " + message);
+        //     }
+        // });
+        apkSignerUtil = new ApkSignerUtil(this);
+        apkSignerUtil.setLogCallback(new ApkSignerUtil.SignLogCallback() {
             @Override
-            public void onLog(String message) {
-                appendLog("[签名] " + message);
+            public void onLog(final String message) {
+                runOnUiThread(() -> {
+                    appendLog("[签名] " + message);
+                });
             }
         });
         checkPermissions();
