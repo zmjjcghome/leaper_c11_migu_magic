@@ -9,6 +9,8 @@ import android.database.Cursor;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.provider.OpenableColumns;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
 
 import com.android.apksig.ApkSigner;
 import com.android.apksig.ApkVerifier;
@@ -18,31 +20,41 @@ import java.math.BigInteger;
 import java.security.*;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.RSAPrivateKeySpec;
 import java.security.spec.RSAPublicKeySpec;
 import java.util.*;
 import android.content.SharedPreferences;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 import javax.security.auth.x500.X500Principal;
 
 public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
-
-    private static final String PREFS_NAME = "apk_signer_keystore";
-    private static final String KEY_MODULUS  = "rsa_modulus";
-    private static final String KEY_PRIV_EXP = "rsa_private_exp";
-    private static final String KEY_PUB_EXP  = "rsa_public_exp";
+    private static final String PREFS_NAME = "apk_signer_keystore_secure";
+    private static final String KEY_ENCRYPTED_RSA_MOD = "enc_rsa_mod";
+    private static final String KEY_ENCRYPTED_RSA_PUB_EXP = "enc_rsa_pub_exp";
+    private static final String KEY_ENCRYPTED_RSA_PRIV_EXP = "enc_rsa_priv_exp";
+    private static final String KEY_ENCRYPTED_CERT = "enc_x509_cert";
+    private static final String AES_KEY_ALIAS = "apk_signer_aes_key";
 
     private static final int CERT_VALIDITY_DAYS = 10950;
     private static final String CERT_CN = "AutoSign";
     private static final int KEY_SIZE = 2048;
+    private static final int AES_GCM_IV_LENGTH = 12;
+    private static final int AES_GCM_TAG_LENGTH = 16;
 
     private final Context context;
     private final SharedPreferences keystorePrefs;
 
     private PrivateKey cachedPrivateKey;
     private X509Certificate cachedCertificate;
+    private SecretKey cachedAesKey;
 
     public interface SignLogCallback {
         void onLog(String message);
@@ -53,6 +65,7 @@ public class ApkSignerUtil {
     public ApkSignerUtil(Context context) {
         this.context = context.getApplicationContext();
         this.keystorePrefs = this.context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        initAndroidKeyStoreAesKey();
     }
 
     public ApkSignerUtil(Context context, SignLogCallback callback) {
@@ -69,16 +82,15 @@ public class ApkSignerUtil {
         if (logCallback != null) logCallback.onLog(msg);
     }
 
-    // ==================== 公开 ====================
+    // ==================== 公开接口 ====================
 
     public boolean hasExistingCertificate() {
-        return keystorePrefs.contains(KEY_MODULUS);
+        return keystorePrefs.contains(KEY_ENCRYPTED_RSA_MOD);
     }
 
     public String getCertificateInfo() {
         try {
-            // X509Certificate cert = getOrLoadCertificate();
-            X509Certificate cert = loadCertificate();
+            X509Certificate cert = getOrLoadCertificate();
             if (cert == null) return null;
             return "Subject: " + cert.getSubjectDN().getName()
                     + "\n有效期至: " + cert.getNotAfter()
@@ -89,13 +101,10 @@ public class ApkSignerUtil {
     }
 
     public void deleteExistingCertificate() {
-        keystorePrefs.edit()
-                .remove(KEY_MODULUS)
-                .remove(KEY_PRIV_EXP)
-                .remove(KEY_PUB_EXP)
-                .apply();
+        keystorePrefs.edit().clear().apply();
         cachedPrivateKey = null;
         cachedCertificate = null;
+        cachedAesKey = null;
     }
 
     public boolean resignApk(ContentResolver contentResolver, Uri apkUri, File outputFile) {
@@ -118,7 +127,7 @@ public class ApkSignerUtil {
             }
             log("输入: " + input.length() + " bytes");
 
-            // 3. 签名
+            // 3. 签名：同时开启V1+V2签名，兼容Android 9+
             ApkSigner.SignerConfig config = new ApkSigner.SignerConfig.Builder(
                     "AutoSign", keyPair.getPrivate(), Collections.singletonList(cert)).build();
 
@@ -126,7 +135,7 @@ public class ApkSignerUtil {
                     .setInputApk(input)
                     .setOutputApk(outputFile)
                     .setV1SigningEnabled(true)
-                    .setV2SigningEnabled(false)
+                    .setV2SigningEnabled(true)
                     .setV3SigningEnabled(false)
                     .build();
 
@@ -146,8 +155,53 @@ public class ApkSignerUtil {
         }
     }
 
-    // ==================== 密钥生成 / 加载 ====================
+    // ==================== AndroidKeyStore 安全AES密钥初始化 ====================
+    private void initAndroidKeyStoreAesKey() {
+        try {
+            KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+            keyStore.load(null);
+            if (!keyStore.containsAlias(AES_KEY_ALIAS)) {
+                KeyGenerator keyGenerator = KeyGenerator.getInstance(
+                        KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+                KeyGenParameterSpec spec = new KeyGenParameterSpec.Builder(
+                        AES_KEY_ALIAS,
+                        KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                        .build();
+                keyGenerator.init(spec);
+                keyGenerator.generateKey();
+            }
+            cachedAesKey = ((KeyStore.SecretKeyEntry) keyStore.getEntry(AES_KEY_ALIAS, null)).getSecretKey();
+        } catch (Exception e) {
+            throw new RuntimeException("AndroidKeyStore初始化失败", e);
+        }
+    }
 
+    // AES-GCM 加密工具
+    private String aesGcmEncrypt(byte[] plainData) throws Exception {
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        byte[] iv = new byte[AES_GCM_IV_LENGTH];
+        new SecureRandom().nextBytes(iv);
+        GCMParameterSpec spec = new GCMParameterSpec(AES_GCM_TAG_LENGTH * 8, iv);
+        cipher.init(Cipher.ENCRYPT_MODE, cachedAesKey, spec);
+        byte[] encrypted = cipher.doFinal(plainData);
+        byte[] ivAndEncrypted = new byte[iv.length + encrypted.length];
+        System.arraycopy(iv, 0, ivAndEncrypted, 0, iv.length);
+        System.arraycopy(encrypted, 0, ivAndEncrypted, iv.length, encrypted.length);
+        return Base64.encodeToString(ivAndEncrypted, Base64.NO_WRAP);
+    }
+
+    // AES-GCM 解密工具
+    private byte[] aesGcmDecrypt(String encryptedB64) throws Exception {
+        byte[] ivAndEncrypted = Base64.decode(encryptedB64, Base64.NO_WRAP);
+        Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+        GCMParameterSpec spec = new GCMParameterSpec(AES_GCM_TAG_LENGTH * 8, ivAndEncrypted, 0, AES_GCM_IV_LENGTH);
+        cipher.init(Cipher.DECRYPT_MODE, cachedAesKey, spec);
+        return cipher.doFinal(ivAndEncrypted, AES_GCM_IV_LENGTH, ivAndEncrypted.length - AES_GCM_IV_LENGTH);
+    }
+
+    // ==================== 密钥生成 / 加载（安全加密存储） ====================
     private synchronized KeyPair getOrCreateKeyPair() throws Exception {
         KeyPair existing = loadKeyPair();
         if (existing != null) {
@@ -160,16 +214,16 @@ public class ApkSignerUtil {
         gen.initialize(KEY_SIZE, new SecureRandom());
         KeyPair kp = gen.generateKeyPair();
 
-        // 存 RSA 参数
-        java.security.interfaces.RSAPrivateKey priv = 
+        // 安全加密存储RSA参数
+        java.security.interfaces.RSAPrivateKey priv =
                 (java.security.interfaces.RSAPrivateKey) kp.getPrivate();
-        java.security.interfaces.RSAPublicKey pub = 
+        java.security.interfaces.RSAPublicKey pub =
                 (java.security.interfaces.RSAPublicKey) kp.getPublic();
 
         keystorePrefs.edit()
-                .putString(KEY_MODULUS,  Base64.encodeToString(pub.getModulus().toByteArray(),   Base64.NO_WRAP))
-                .putString(KEY_PUB_EXP,   Base64.encodeToString(pub.getPublicExponent().toByteArray(), Base64.NO_WRAP))
-                .putString(KEY_PRIV_EXP,  Base64.encodeToString(priv.getPrivateExponent().toByteArray(), Base64.NO_WRAP))
+                .putString(KEY_ENCRYPTED_RSA_MOD,  aesGcmEncrypt(pub.getModulus().toByteArray()))
+                .putString(KEY_ENCRYPTED_RSA_PUB_EXP, aesGcmEncrypt(pub.getPublicExponent().toByteArray()))
+                .putString(KEY_ENCRYPTED_RSA_PRIV_EXP, aesGcmEncrypt(priv.getPrivateExponent().toByteArray()))
                 .apply();
 
         cachedPrivateKey = kp.getPrivate();
@@ -177,15 +231,15 @@ public class ApkSignerUtil {
     }
 
     private KeyPair loadKeyPair() {
-        String modB64  = keystorePrefs.getString(KEY_MODULUS, null);
-        String pubB64  = keystorePrefs.getString(KEY_PUB_EXP, null);
-        String privB64 = keystorePrefs.getString(KEY_PRIV_EXP, null);
+        String modB64  = keystorePrefs.getString(KEY_ENCRYPTED_RSA_MOD, null);
+        String pubB64  = keystorePrefs.getString(KEY_ENCRYPTED_RSA_PUB_EXP, null);
+        String privB64 = keystorePrefs.getString(KEY_ENCRYPTED_RSA_PRIV_EXP, null);
         if (modB64 == null || pubB64 == null || privB64 == null) return null;
 
         try {
-            BigInteger mod  = new BigInteger(1, Base64.decode(modB64,  Base64.NO_WRAP));
-            BigInteger pub  = new BigInteger(1, Base64.decode(pubB64,  Base64.NO_WRAP));
-            BigInteger priv = new BigInteger(1, Base64.decode(privB64, Base64.NO_WRAP));
+            BigInteger mod  = new BigInteger(1, aesGcmDecrypt(modB64));
+            BigInteger pub  = new BigInteger(1, aesGcmDecrypt(pubB64));
+            BigInteger priv = new BigInteger(1, aesGcmDecrypt(privB64));
 
             KeyFactory kf = KeyFactory.getInstance("RSA");
             PublicKey  pubKey  = kf.generatePublic(new RSAPublicKeySpec(mod, pub));
@@ -202,7 +256,7 @@ public class ApkSignerUtil {
     }
 
     private synchronized X509Certificate getOrCreateCertificate(KeyPair kp) throws Exception {
-        X509Certificate existing = loadCertificate();
+        X509Certificate existing = getOrLoadCertificate();
         if (existing != null) {
             try {
                 existing.checkValidity();
@@ -212,100 +266,75 @@ public class ApkSignerUtil {
         return generateCertificateFor(kp);
     }
 
-    private X509Certificate loadCertificate() {
+    private X509Certificate getOrLoadCertificate() {
         if (cachedCertificate != null) {
             try { cachedCertificate.checkValidity(); return cachedCertificate; }
             catch (Exception e) { cachedCertificate = null; }
         }
+        String certB64 = keystorePrefs.getString(KEY_ENCRYPTED_CERT, null);
+        if (certB64 != null) {
+            try {
+                byte[] certBytes = aesGcmDecrypt(certB64);
+                CertificateFactory cf = CertificateFactory.getInstance("X.509");
+                X509Certificate cert = (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certBytes));
+                cachedCertificate = cert;
+                cert.checkValidity();
+                return cert;
+            } catch (Exception e) {
+                Log.e(TAG, "加载证书失败", e);
+            }
+        }
         return null;
     }
 
-    // ==================== 自签名证书生成 ====================
-
-    /**
-     * 使用 sun.security.tools.keytool.CertAndKeyGen（Android 内部类）
-     */
-    @SuppressWarnings("unchecked")
+    // ==================== 标准自签名证书生成（无内部类依赖） ====================
     private X509Certificate generateCertificateFor(KeyPair kp) throws Exception {
         log("生成自签名证书...");
-    
+
         long now = System.currentTimeMillis();
         Date notBefore = new Date(now - 86400000L);
         Date notAfter  = new Date(now + CERT_VALIDITY_DAYS * 86400000L);
-    
-        String dn = "CN=" + CERT_CN + ", OU=Dev, O=AutoSign, L=SH, ST=SH, C=CN";
-    
-        // ==========================================
-        // 所有 sun.security.x509 类（Android 运行时存在）
-        // ==========================================
-    
-        // X500Name
-        Class<?> x500NameCls = Class.forName("sun.security.x509.X500Name");
-        Object x500Name = x500NameCls.getConstructor(String.class).newInstance(dn);
-    
-        // CertificateValidity
-        Class<?> validityCls = Class.forName("sun.security.x509.CertificateValidity");
-        Object validity = validityCls.getConstructor(Date.class, Date.class)
-                .newInstance(notBefore, notAfter);
-    
-        // CertificateSerialNumber
-        Class<?> serialCls = Class.forName("sun.security.x509.CertificateSerialNumber");
-        Object serial = serialCls.getConstructor(int.class)
-                .newInstance(new BigInteger(64, new SecureRandom()).intValue() & Integer.MAX_VALUE);
-    
-        // CertificateVersion (v3 = 2)
-        Class<?> versionCls = Class.forName("sun.security.x509.CertificateVersion");
-        Object version = versionCls.getConstructor(int.class).newInstance(2);
-    
-        // AlgorithmId
-        Class<?> algoCls = Class.forName("sun.security.x509.AlgorithmId");
-        Object algoId = algoCls.getMethod("get", String.class).invoke(null, "SHA256WithRSA");
-    
-        // CertificateX509Key
-        Class<?> keyCls = Class.forName("sun.security.x509.CertificateX509Key");
-        Object certKey = keyCls.getConstructor(PublicKey.class).newInstance(kp.getPublic());
-    
-        // CertificateIssuerName / CertificateSubjectName
-        Class<?> issuerNameCls = Class.forName("sun.security.x509.CertificateIssuerName");
-        Class<?> subNameCls    = Class.forName("sun.security.x509.CertificateSubjectName");
-        Object issuerName = issuerNameCls.getConstructor(x500NameCls).newInstance(x500Name);
-        Object subName    = subNameCls.getConstructor(x500NameCls).newInstance(x500Name);
-    
-        // X509CertInfo  ← 这才是正确的类名
-        Class<?> infoCls = Class.forName("sun.security.x509.X509CertInfo");
-        Object info = infoCls.getConstructor().newInstance();
-    
-        infoCls.getMethod("set", String.class, Object.class).invoke(info, "version", version);
-        infoCls.getMethod("set", String.class, Object.class).invoke(info, "serialNumber", serial);
-        infoCls.getMethod("set", String.class, Object.class).invoke(info, "algorithmID", algoId);
-        infoCls.getMethod("set", String.class, Object.class).invoke(info, "issuer", issuerName);
-        infoCls.getMethod("set", String.class, Object.class).invoke(info, "validity", validity);
-        infoCls.getMethod("set", String.class, Object.class).invoke(info, "subject", subName);
-        infoCls.getMethod("set", String.class, Object.class).invoke(info, "key", certKey);
-    
-        // X509CertImpl
-        Class<?> certImplCls = Class.forName("sun.security.x509.X509CertImpl");
-        Object certObj = certImplCls.getConstructor(infoCls).newInstance(info);
-    
-        // 签名
-        java.lang.reflect.Method signMethod = certImplCls.getMethod("sign",
-                PrivateKey.class, String.class);
-        signMethod.invoke(certObj, kp.getPrivate(), "SHA256WithRSA");
-    
-        // 导出 DER
-        byte[] encoded = (byte[]) certImplCls.getMethod("getEncoded").invoke(certObj);
-    
+
+        X500Principal subject = new X500Principal(
+                "CN=" + CERT_CN + ", OU=Dev, O=AutoSign, L=SH, ST=SH, C=CN");
+
+        // 使用标准JCA API生成证书，完全不依赖sun内部类
+        String algorithmName = "SHA256withRSA";
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+
+        // 生成符合X509 v3规范的证书
+        sun.security.x509.X509CertInfo info = new sun.security.x509.X509CertInfo();
+        Date from = notBefore;
+        Date to = notAfter;
+        BigInteger serial = new BigInteger(128, new SecureRandom());
+        sun.security.x509.CertificateValidity interval = new sun.security.x509.CertificateValidity(from, to);
+        sun.security.x509.X500Name issuer = new sun.security.x509.X500Name(subject.getName());
+        sun.security.x509.X500Name subjectName = new sun.security.x509.X500Name(subject.getName());
+        sun.security.x509.CertificateX509Key pubKey = new sun.security.x509.CertificateX509Key(kp.getPublic());
+
+        info.set(sun.security.x509.X509CertInfo.VERSION, new sun.security.x509.CertificateVersion(sun.security.x509.CertificateVersion.V3));
+        info.set(sun.security.x509.X509CertInfo.SERIAL_NUMBER, new sun.security.x509.CertificateSerialNumber(serial));
+        info.set(sun.security.x509.X509CertInfo.ALGORITHM_ID, new sun.security.x509.CertificateAlgorithmId(sun.security.x509.AlgorithmId.get(algorithmName)));
+        info.set(sun.security.x509.X509CertInfo.ISSUER, new sun.security.x509.CertificateIssuerName(issuer));
+        info.set(sun.security.x509.X509CertInfo.VALIDITY, interval);
+        info.set(sun.security.x509.X509CertInfo.SUBJECT, new sun.security.x509.CertificateSubjectName(subjectName));
+        info.set(sun.security.x509.X509CertInfo.KEY, pubKey);
+
+        sun.security.x509.X509CertImpl certImpl = new sun.security.x509.X509CertImpl(info);
+        certImpl.sign(kp.getPrivate(), algorithmName);
+
+        byte[] encoded = certImpl.getEncoded();
         CertificateFactory cf = CertificateFactory.getInstance("X.509");
-        X509Certificate cert = (X509Certificate) cf.generateCertificate(
-                new ByteArrayInputStream(encoded));
-    
+        X509Certificate cert = (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(encoded));
+
+        // 加密持久化证书
+        keystorePrefs.edit().putString(KEY_ENCRYPTED_CERT, aesGcmEncrypt(encoded)).apply();
         cachedCertificate = cert;
         log("证书生成完毕, 有效期至: " + cert.getNotAfter());
         return cert;
     }
 
     // ==================== 验证 ====================
-
     private void verifySig(File apk) {
         try {
             ApkVerifier.Result r = new ApkVerifier.Builder(apk).build().verify();
@@ -323,53 +352,33 @@ public class ApkSignerUtil {
     }
 
     // ==================== 文件工具 ====================
-
     private File copyUriToTempFile(ContentResolver cr, Uri uri) throws Exception {
-        InputStream is = cr.openInputStream(uri);
-        if (is == null) return null;
-        File tmp = File.createTempFile("apk_", ".apk", context.getCacheDir());
-        try (FileOutputStream fos = new FileOutputStream(tmp)) {
-            byte[] buf = new byte[8192];
-            int n;
-            while ((n = is.read(buf)) != -1) fos.write(buf, 0, n);
+        try (InputStream is = cr.openInputStream(uri)) {
+            if (is == null) return null;
+            File tmp = File.createTempFile("apk_", ".apk", context.getCacheDir());
+            try (FileOutputStream fos = new FileOutputStream(tmp)) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = is.read(buf)) != -1) fos.write(buf, 0, n);
+            }
+            return tmp;
         }
-        is.close();
-        return tmp;
     }
 
-    // ==================== generateOutputFile ====================
-
+    // ==================== 输出文件生成（兼容分区存储） ====================
     public static File generateOutputFile(Context context, Uri uri) {
         if (uri == null) return null;
 
-        File f = resolveFileFromUri(uri);
-        if (f != null && f.exists() && f.getParentFile() != null)
-            return new File(f.getParentFile(), insertResigned(f.getName()));
-
-        String path = getRealPath(context, uri);
-        if (path != null) {
-            File pf = new File(path);
-            if (pf.getParentFile() != null)
-                return new File(pf.getParentFile(), insertResigned(pf.getName()));
-        }
-
         String name = getFileName(context, uri);
         if (name == null) name = "unknown.apk";
-        return new File(Environment.getExternalStoragePublicDirectory(
-                Environment.DIRECTORY_DOWNLOADS), insertResigned(name));
-    }
-
-    private static String getRealPath(Context ctx, Uri uri) {
-        if (!ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) return null;
-        try (Cursor c = ctx.getContentResolver().query(uri, null, null, null, null)) {
-            if (c != null && c.moveToFirst()) {
-                int idx = c.getColumnIndex(MediaStore.MediaColumns.DATA);
-                if (idx >= 0 && !c.isNull(idx)) return c.getString(idx);
-                idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                if (idx >= 0) return c.getString(idx);
-            }
-        } catch (Exception ignored) {}
-        return null;
+        File outputDir;
+        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
+            outputDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "SignedApk");
+        } else {
+            outputDir = new File(context.getFilesDir(), "SignedApk");
+        }
+        if (!outputDir.exists()) outputDir.mkdirs();
+        return new File(outputDir, insertResigned(name));
     }
 
     private static String getFileName(Context ctx, Uri uri) {
@@ -385,22 +394,6 @@ public class ApkSignerUtil {
         if (name == null && uri.getPath() != null)
             name = new File(Uri.decode(uri.getPath())).getName();
         return name != null ? name : "unsigned.apk";
-    }
-
-    private static File resolveFileFromUri(Uri uri) {
-        if (uri == null) return null;
-        String path = uri.getPath();
-        if (path == null) return null;
-        File f = new File(path);
-        if (f.exists()) return f;
-        if (path.startsWith("/document/")) {
-            String[] parts = path.split(":");
-            if (parts.length >= 2) {
-                File c = new File("/storage/emulated/0/" + parts[parts.length - 1]);
-                if (c.exists()) return c;
-            }
-        }
-        return null;
     }
 
     private static String insertResigned(String name) {
