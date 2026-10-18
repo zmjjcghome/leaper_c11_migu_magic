@@ -1048,7 +1048,7 @@ public class MainActivity extends AppCompatActivity {
         appendLog("========== 开始重新签名 APK ==========");
         new Thread(() -> {
             // 根据原始 APK Uri 生成输出文件路径
-            actualSignedApkFile = ApkSignerUtil.generateOutputFile(selectedApkUri);
+            actualSignedApkFile = ApkSignerUtil.generateOutputFile(this, selectedApkUri);
             if (actualSignedApkFile == null) {
                 uiHandler.post(() -> {
                     tvStatus.setText("无法确定输出路径");
