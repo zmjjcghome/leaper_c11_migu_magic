@@ -5,18 +5,25 @@
     android:orientation="vertical"
     android:padding="16dp">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="第一步：选择 APK 文件"
-        android:textSize="16sp"
-        android:textStyle="bold" />
+    <LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:layout_marginTop="16dp">
 
-    <Button
-        android:id="@+id/btn_select_apk"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="选择 APK 文件" />
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="第一步：选择 APK 文件"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+    
+        <Button
+            android:id="@+id/btn_select_apk"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="选择 APK 文件" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/tv_selected_apk"
