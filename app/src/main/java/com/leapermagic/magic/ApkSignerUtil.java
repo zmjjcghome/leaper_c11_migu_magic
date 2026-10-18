@@ -16,6 +16,8 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import java.io.*;
 import java.security.*;
 import java.security.cert.Certificate;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -41,10 +43,14 @@ public class ApkSignerUtil {
     }
 
     private SignLogCallback logCallback;
+    
+    // 提前持有BC Provider的单例，避免重复注册
+    private static final BouncyCastleProvider BC_PROVIDER = new BouncyCastleProvider();
 
     static {
-        // 注册 Bouncy Castle Provider 以支持 BKS 密钥库格式
-        Security.addProvider(new BouncyCastleProvider());
+        // 先移除重复的BC Provider，再重新注册，确保它在Provider列表中是唯一且可用的
+        Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME);
+        Security.addProvider(BC_PROVIDER);
     }
 
     public ApkSignerUtil(Context context) {
@@ -147,11 +153,12 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 获取或创建标准BKS密钥库
+     * 获取或创建标准BKS密钥库，修复X.509 not found异常
      */
     private synchronized KeyStore getOrCreateKeyStore() throws Exception {
         File ksFile = new File(context.getFilesDir(), KEYSTORE_FILENAME);
-        KeyStore keyStore = KeyStore.getInstance("BKS", "BC");
+        // 明确指定使用已注册的BC单例实例，避免动态查找Provider失败
+        KeyStore keyStore = KeyStore.getInstance("BKS", BC_PROVIDER);
 
         if (ksFile.exists()) {
             try (FileInputStream fis = new FileInputStream(ksFile)) {
@@ -196,7 +203,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 使用Bouncy Castle生成自签名X509证书，避开Provider冲突
+     * 修复X.509 not found：显式指定CertificateFactory使用BC Provider
      */
     private X509Certificate generateSelfSignedCert(KeyPair kp) throws Exception {
         org.bouncycastle.asn1.x500.X500Name subject = new org.bouncycastle.asn1.x500.X500Name("CN=AutoSign, OU=Dev, O=AutoSign, C=CN");
@@ -216,9 +223,9 @@ public class ApkSignerUtil {
         
         org.bouncycastle.cert.X509CertificateHolder certHolder = certBuilder.build(signer);
         
-        return new org.bouncycastle.cert.jcajce.JcaX509CertificateConverter()
-                .setProvider("BC")
-                .getCertificate(certHolder);
+        // 关键修复：显式指定X.509 CertificateFactory使用BC Provider，彻底避免X.509 not found
+        CertificateFactory cf = CertificateFactory.getInstance("X.509", BC_PROVIDER);
+        return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certHolder.getEncoded()));
     }
 
     /**
@@ -285,19 +292,17 @@ public class ApkSignerUtil {
         
         return new File(outputDir, fileName);
     }
-    // ==================== 输出文件生成（兼容分区存储） ====================
+
     public static File generateOutputFile(Context context, Uri uri) {
         if (uri == null) return null;
 
         String name = getFileName(context, uri);
         if (name == null) name = "unknown.apk";
         
-        // 优先使用应用专属外部存储目录，无需权限且兼容性好
         File outputDir;
         if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
             outputDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "SignedApk");
         } else {
-            //  fallback to internal files dir if external storage is not available
             outputDir = new File(context.getFilesDir(), "SignedApk");
         }
         
