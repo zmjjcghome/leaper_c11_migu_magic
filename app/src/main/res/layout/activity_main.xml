@@ -40,8 +40,37 @@
         android:layout_height="wrap_content"
         android:hint="例：/storage/emulated/0/Download/name1.apk"
         android:inputType="textUri" />
+    
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="16dp">
+    
+        <Button
+            android:id="@+id/btn_toggle_monitor"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="开始监控" />
+    
+        <Button
+            android:id="@+id/btn_prepare_files"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="离谱安装1 准备文件" />
+    
+        <Button
+            android:id="@+id/btn_execute_install"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="离谱安装2 执行安装" />
+    
+    </LinearLayout>
 
-    <Button
+    <!-- <Button
         android:id="@+id/btn_toggle_monitor"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -59,7 +88,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="离谱安装2 执行安装"
-         />
+         /> -->
     
     <ScrollView
     android:layout_width="match_parent"
