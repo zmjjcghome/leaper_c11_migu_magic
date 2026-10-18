@@ -253,7 +253,7 @@ public class MainActivity extends AppCompatActivity {
         tvStatus = findViewById(R.id.tv_status);
         
         // 初始状态：重签名相关按钮不可用
-        // btnResignApk.setEnabled(false);
+        btnResignApk.setEnabled(false);
         // btnInstallResigned.setEnabled(false);
         
         // 初始状态：安装按钮不可用
@@ -289,7 +289,7 @@ public class MainActivity extends AppCompatActivity {
                         actualApkPath = null;
                         actualSignedApkFile = null;
                         btnExecuteInstall.setEnabled(false);
-                        // btnResignApk.setEnabled(true);
+                        btnResignApk.setEnabled(true);
                         // btnInstallResigned.setEnabled(false);
                         appendLog("已选择 APK，可以进行重新签名或准备绕过安装");
                     }
@@ -1036,17 +1036,17 @@ public class MainActivity extends AppCompatActivity {
         tvStatus.setText("正在重新签名...");
         appendLog("========== 开始重新签名 APK ==========");
         new Thread(() -> {
-            // if (apkSignerUtil == null) {
-            //     apkSignerUtil = new ApkSignerUtil(this);
-            //     apkSignerUtil.setLogCallback(new ApkSignerUtil.SignLogCallback() {
-            //         @Override
-            //         public void onLog(final String message) {
-            //             runOnUiThread(() -> {
-            //                 appendLog("[签名] " + message);
-            //             });
-            //         }
-            //     });
-            // }
+            if (apkSignerUtil == null) {
+                apkSignerUtil = new ApkSignerUtil(this);
+                apkSignerUtil.setLogCallback(new ApkSignerUtil.SignLogCallback() {
+                    @Override
+                    public void onLog(final String message) {
+                        runOnUiThread(() -> {
+                            appendLog("[签名] " + message);
+                        });
+                    }
+                });
+            }
             // 根据原始 APK Uri 生成输出文件路径
             actualSignedApkFile = ApkSignerUtil.generateOutputFile(selectedApkUri);
             if (actualSignedApkFile == null) {
