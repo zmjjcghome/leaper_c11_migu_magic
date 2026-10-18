@@ -82,7 +82,44 @@ public class MainActivity extends AppCompatActivity {
     private final Runnable saveRunnable = () -> savePath(etTargetPath.getText().toString().trim());
     
     private AdbClient.AdbConnection currentConnection;
+    // ==================== 权限相关 ====================
     
+    /**
+     * Android 9+ 需要的所有权限
+     */
+    private static final String[] REQUIRED_PERMISSIONS = {
+        // 网络权限（ADB通信必需）
+        Manifest.permission.INTERNET,
+        Manifest.permission.ACCESS_NETWORK_STATE,
+        Manifest.permission.ACCESS_WIFI_STATE,
+        Manifest.permission.CHANGE_WIFI_STATE,
+        Manifest.permission.CHANGE_WIFI_MULTICAST_STATE,
+        
+        // 存储权限（读取/安装APK）
+        Manifest.permission.READ_EXTERNAL_STORAGE,
+        Manifest.permission.WRITE_EXTERNAL_STORAGE,
+        
+        // 安装权限
+        Manifest.permission.REQUEST_INSTALL_PACKAGES,
+        
+        // 设备信息
+        Manifest.permission.READ_PHONE_STATE,
+    };
+    
+    /**
+     * Android 11+ 需要的额外权限
+     */
+    private static final String[] ANDROID_11_PERMISSIONS = {
+        Manifest.permission.MANAGE_EXTERNAL_STORAGE,
+        Manifest.permission.QUERY_ALL_PACKAGES,
+    };
+    
+    /**
+     * Android 13+ 的通知权限
+     */
+    private static final String[] ANDROID_13_PERMISSIONS = {
+        Manifest.permission.POST_NOTIFICATIONS,
+    };
     /**
      * 示例1：端口检查
      */
@@ -198,11 +235,205 @@ public class MainActivity extends AppCompatActivity {
         btnExecuteInstall.setOnClickListener(v -> executeInstall());
 
         checkPermissions();
-
+        checkAllPermissions();
+        
         checkPort("127.0.0.1", 5555);
         connectToDevice("127.0.0.1", 5555);
     }
+    // ==================== 权限管理 ====================
     
+    /**
+     * 检查所有权限
+     */
+    private void checkAllPermissions() {
+        appendLog("🔍 正在检查权限...");
+        
+        // 1. 收集需要请求的权限
+        List<String> permissionsToRequest = new ArrayList<>();
+        
+        for (String permission : REQUIRED_PERMISSIONS) {
+            if (ContextCompat.checkSelfPermission(this, permission) 
+                    != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(permission);
+            }
+        }
+        
+        // Android 11+ 额外权限
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            for (String permission : ANDROID_11_PERMISSIONS) {
+                if (ContextCompat.checkSelfPermission(this, permission) 
+                        != PackageManager.PERMISSION_GRANTED) {
+                    // MANAGE_EXTERNAL_STORAGE 需要特殊处理
+                    if (!Manifest.permission.MANAGE_EXTERNAL_STORAGE.equals(permission)) {
+                        permissionsToRequest.add(permission);
+                    }
+                }
+            }
+        }
+        
+        // Android 13+ 通知权限
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            for (String permission : ANDROID_13_PERMISSIONS) {
+                if (ContextCompat.checkSelfPermission(this, permission) 
+                        != PackageManager.PERMISSION_GRANTED) {
+                    permissionsToRequest.add(permission);
+                }
+            }
+        }
+        
+        // 2. 请求权限
+        if (!permissionsToRequest.isEmpty()) {
+            appendLog("📋 需要请求 " + permissionsToRequest.size() + " 项权限");
+            
+            // 检查是否有"不再询问"的权限
+            boolean hasDeniedForever = false;
+            for (String permission : permissionsToRequest) {
+                if (ActivityCompat.shouldShowRequestPermissionRationale(this, permission)) {
+                    appendLog("ℹ️ 权限需要解释: " + getPermissionDisplayName(permission));
+                } else if (ContextCompat.checkSelfPermission(this, permission) 
+                        == PackageManager.PERMISSION_DENIED) {
+                    hasDeniedForever = true;
+                }
+            }
+            
+            if (hasDeniedForever) {
+                showGoToSettingsDialog();
+            } else {
+                permissionLauncher.launch(permissionsToRequest.toArray(new String[0]));
+            }
+        } else {
+            appendLog("✅ 基础权限已满足");
+            checkSpecialPermissions();
+        }
+    }
+    
+    /**
+     * 检查特殊权限
+     */
+    private void checkSpecialPermissions() {
+        // 安装未知应用权限（Android 8+）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (!getPackageManager().canRequestPackageInstalls()) {
+                appendLog("⚠️ 需要安装未知应用权限");
+                requestInstallPermission();
+                return;
+            }
+        }
+        
+        // 管理所有文件权限（Android 11+）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                appendLog("⚠️ 需要管理所有文件权限");
+                requestManageFilesPermission();
+                return;
+            }
+        }
+        
+        // 修改系统设置权限
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (!Settings.System.canWrite(this)) {
+                appendLog("ℹ️ 修改系统设置权限未授予（非必需）");
+            }
+        }
+        
+        appendLog("✅ 所有权限检查完毕");
+        onPermissionsGranted();
+    }
+    
+    /**
+     * 权限授予后的回调
+     */
+    private void onPermissionsGranted() {
+        appendLog("🎉 权限准备就绪，可以开始使用");
+        // 自动扫描局域网设备
+        appendLog("💡 点击[扫描网络]查找ADB设备");
+    }
+    
+    /**
+     * 请求安装权限
+     */
+    private void requestInstallPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            installPermissionLauncher.launch(intent);
+        }
+    }
+    
+    /**
+     * 请求管理文件权限
+     */
+    private void requestManageFilesPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+            intent.setData(Uri.parse("package:" + getPackageName()));
+            manageFilesPermissionLauncher.launch(intent);
+        }
+    }
+    
+    /**
+     * 显示权限说明对话框
+     */
+    private void showPermissionDialog(String message) {
+        new AlertDialog.Builder(this)
+            .setTitle("权限说明")
+            .setMessage(message)
+            .setPositiveButton("去设置", (dialog, which) -> {
+                Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+            })
+            .setNegativeButton("取消", null)
+            .show();
+    }
+    
+    /**
+     * 显示跳转设置对话框
+     */
+    private void showGoToSettingsDialog() {
+        new AlertDialog.Builder(this)
+            .setTitle("需要权限")
+            .setMessage("部分权限被永久拒绝，请前往应用设置手动开启")
+            .setPositiveButton("去设置", (dialog, which) -> {
+                Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+            })
+            .setNegativeButton("取消", (dialog, which) -> {
+                appendLog("⚠️ 权限不足，功能可能受限");
+            })
+            .show();
+    }
+    
+    /**
+     * 获取权限的友好显示名称
+     */
+    private String getPermissionDisplayName(String permission) {
+        switch (permission) {
+            case Manifest.permission.INTERNET:
+                return "网络访问";
+            case Manifest.permission.ACCESS_NETWORK_STATE:
+                return "网络状态";
+            case Manifest.permission.ACCESS_WIFI_STATE:
+                return "WiFi状态";
+            case Manifest.permission.CHANGE_WIFI_STATE:
+                return "WiFi控制";
+            case Manifest.permission.READ_EXTERNAL_STORAGE:
+                return "读取存储";
+            case Manifest.permission.WRITE_EXTERNAL_STORAGE:
+                return "写入存储";
+            case Manifest.permission.REQUEST_INSTALL_PACKAGES:
+                return "安装应用";
+            case Manifest.permission.READ_PHONE_STATE:
+                return "读取设备信息";
+            case Manifest.permission.MANAGE_EXTERNAL_STORAGE:
+                return "管理文件";
+            case Manifest.permission.POST_NOTIFICATIONS:
+                return "通知";
+            default:
+                return permission;
+        }
+    }
     /**
      * 初始化：自动检测 adbd 端口并建立连接
      * 在 onCreate 或用户点击某个按钮时调用
