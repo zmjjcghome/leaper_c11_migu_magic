@@ -19,14 +19,14 @@ public class AdbPortDetector {
         // 策略1：如果用户指定了端口，先直接尝试
         if (preferredPort > 0) {
             if (callback != null) callback.onLog("检查指定端口: " + preferredPort);
-            if (AdbConnection.isAdbdListening("127.0.0.1", preferredPort)) {
+            if (AdbClient.checkAdbPort("127.0.0.1", preferredPort, 3000)) {
                 return preferredPort;
             }
         }
 
         // 策略2：检查常见端口 5555
         if (callback != null) callback.onLog("检查端口 5555...");
-        if (AdbConnection.isAdbdListening("127.0.0.1", 5555)) {
+        if (AdbClient.checkAdbPort("127.0.0.1", 5555, 3000)) {
             return 5555;
         }
 
@@ -216,7 +216,7 @@ public class AdbPortDetector {
                 final int p = port;
                 executor.submit(() -> {
                     if (result.get() != -1) return;
-                    if (AdbConnection.isAdbdListening("127.0.0.1", p)) {
+                    if (AdbClient.checkAdbPort("127.0.0.1", p, 3000)) {
                         result.compareAndSet(-1, p);
                         if (callback != null) {
                             callback.onLog("扫描命中端口: " + p);
