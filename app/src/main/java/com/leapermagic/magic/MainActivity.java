@@ -484,7 +484,7 @@ public class MainActivity extends AppCompatActivity {
         
         // 然后再尝试连接
         try {
-            adbConnection.connect("127.0.0.1", 5555, 5000);
+            connectToDevice("127.0.0.1", 5555);
         } catch (IOException e) {
             appendLog("[ADB] 执行异常: " + e.getMessage());
             // ADB 连接可能已断开，回退到 sh
