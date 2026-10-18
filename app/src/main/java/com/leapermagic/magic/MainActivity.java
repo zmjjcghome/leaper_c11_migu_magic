@@ -337,15 +337,6 @@ public class MainActivity extends AppCompatActivity {
         //         appendLog("[签名] " + message);
         //     }
         // });
-        apkSignerUtil = new ApkSignerUtil(this);
-        apkSignerUtil.setLogCallback(new ApkSignerUtil.SignLogCallback() {
-            @Override
-            public void onLog(final String message) {
-                runOnUiThread(() -> {
-                    appendLog("[签名] " + message);
-                });
-            }
-        });
         checkPermissions();
         checkAllPermissions();
         setupLogListener();
@@ -1045,6 +1036,17 @@ public class MainActivity extends AppCompatActivity {
         tvStatus.setText("正在重新签名...");
         appendLog("========== 开始重新签名 APK ==========");
         new Thread(() -> {
+            if (apkSignerUtil == null) {
+                apkSignerUtil = new ApkSignerUtil(this);
+                apkSignerUtil.setLogCallback(new ApkSignerUtil.SignLogCallback() {
+                    @Override
+                    public void onLog(final String message) {
+                        runOnUiThread(() -> {
+                            appendLog("[签名] " + message);
+                        });
+                    }
+                });
+            }
             // 根据原始 APK Uri 生成输出文件路径
             actualSignedApkFile = ApkSignerUtil.generateOutputFile(selectedApkUri);
             if (actualSignedApkFile == null) {
