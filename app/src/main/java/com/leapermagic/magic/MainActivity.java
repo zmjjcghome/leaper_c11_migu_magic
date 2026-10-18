@@ -712,15 +712,10 @@ public class MainActivity extends AppCompatActivity {
     
         String cmd = "export CLASSPATH=" + dexPath + " && " +
                      "app_process /system/framework " + INSTALLER_CLASS + " " + apkPath;
-        
+
+        checkPort("127.0.0.1", 5555);
         // 然后再尝试连接
-        try {
-            connectToDevice("127.0.0.1", 5555);
-        } catch (IOException e) {
-            appendLog("[ADB] 执行异常: " + e.getMessage());
-            // ADB 连接可能已断开，回退到 sh
-            appendLog("[ADB] 回退到普通 sh 执行...");
-        }
+        connectToDevice("127.0.0.1", 5555);
         if (adbConnection == null ) {
             appendLog("========== 开始初始化adb ==========");
             initAdbConnection();
