@@ -252,13 +252,6 @@ public class MainActivity extends AppCompatActivity {
         btnExecuteInstall = findViewById(R.id.btn_execute_install);
         tvStatus = findViewById(R.id.tv_status);
         
-        // 初始化签名工具，设置日志回调
-        apkSignerUtil = new ApkSignerUtil(this, new ApkSignerUtil.SignLogCallback() {
-            @Override
-            public void onLog(String message) {
-                appendLog("[签名] " + message);
-            }
-        });
         // 初始状态：重签名相关按钮不可用
         btnResignApk.setEnabled(false);
         // btnInstallResigned.setEnabled(false);
@@ -337,6 +330,13 @@ public class MainActivity extends AppCompatActivity {
         // ====== 按钮4：安装重签名后的APK ======
         // btnInstallResigned.setOnClickListener(v -> installResignedApk());
         
+        // 初始化签名工具，设置日志回调
+        apkSignerUtil = new ApkSignerUtil(this, new ApkSignerUtil.SignLogCallback() {
+            @Override
+            public void onLog(String message) {
+                appendLog("[签名] " + message);
+            }
+        });
         checkPermissions();
         checkAllPermissions();
         setupLogListener();
