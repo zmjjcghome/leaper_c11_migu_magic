@@ -560,7 +560,7 @@ public class MainActivity extends AppCompatActivity {
             if (adbdPort > 0) {
                 appendLog("[成功] 找到 adbd 端口: " + adbdPort);
                 // 建立持久连接
-                AdbClient.AdbConnectionResult result = AdbClient.connect(ip, port);
+                AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
 
                 if (result.success) {
                     adbConnection = result.connection;
