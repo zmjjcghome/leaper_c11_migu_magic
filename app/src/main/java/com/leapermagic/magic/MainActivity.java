@@ -352,7 +352,7 @@ public class MainActivity extends AppCompatActivity {
         checkAllPermissions();
         setupLogListener();
         
-        initAdbConnection();
+        //initAdbConnection();
     }
     // ==================== 权限管理 ====================
     
