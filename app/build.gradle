@@ -62,5 +62,8 @@ dependencies {
     // BouncyCastle 证书生成库（用于无 keystore 时自动安全生成证书）
     implementation 'org.bouncycastle:bcpkix-jdk15on:1.70'
     implementation 'org.bouncycastle:bcprov-jdk15on:1.70'
+    // SpongyCastle 核心库，避免和系统BC冲突
+implementation 'com.madgag.spongycastle:core:1.58.0.0'
+implementation 'com.madgag.spongycastle:pkix:1.58.0.0'
 }
 
