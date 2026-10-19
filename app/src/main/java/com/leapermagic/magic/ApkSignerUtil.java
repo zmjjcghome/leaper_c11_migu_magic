@@ -139,7 +139,8 @@ public class ApkSignerUtil {
                     .setOutputApk(outputFile)
                     .setV1SigningEnabled(true) // V1 签名
                     .setV2SigningEnabled(true) // V2 签名
-                    .setV3SigningEnabled(true); // V3 签名 (Android 9+)
+                    .setV3SigningEnabled(true) // V3 签名 (Android 9+)
+                    .setMinSdkVersion(28);     // 【关键修复】显式指定最小 SDK 版本，防止 V3 签名块编码失败
 
             log("开始执行多版本签名算法...");
             builder.build().sign();
@@ -148,7 +149,6 @@ public class ApkSignerUtil {
             return true;
 
         } catch (Exception e) {
-            // 详细打印出底层原因，便于排查
             String detailMsg = e.getMessage();
             Throwable cause = e.getCause();
             while (cause != null) {
@@ -251,7 +251,7 @@ public class ApkSignerUtil {
                     keyPair.getPublic()
             );
 
-            // 【关键修复】为证书添加数字签名用途扩展 (KeyUsage)，满足 apksig 校验
+            // 为证书添加数字签名用途扩展 (KeyUsage)，满足 apksig 校验
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature);
             certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
