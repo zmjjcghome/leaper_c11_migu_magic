@@ -15,6 +15,7 @@ import java.io.*;
 import java.security.*;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
@@ -24,14 +25,15 @@ public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
     
-    // 使用对象序列化持久化密钥对文件名
-    private static final String KEYPAIR_FILENAME = "autosign_keypair.dat";
+    // 标准二进制持久化文件名
+    private static final String PRIVATE_KEY_FILENAME = "autosign.key";
+    private static final String CERT_FILENAME = "autosign.crt";
     
     private static final int KEY_SIZE = 2048;
     private static final int VALIDITY_DAYS = 10950; // 30年有效期
 
-    // 内存缓存，避免频繁读写文件
-    private static KeyPair cachedKeyPair = null;
+    // 内存缓存，避免重复读取文件
+    private static PrivateKey cachedPrivateKey = null;
     private static X509Certificate cachedCert = null;
 
     private final Context context;
@@ -67,15 +69,12 @@ public class ApkSignerUtil {
         log("========== 签名开始 ==========");
         File inputApk = null;
         try {
-            KeyPair keyPair = getOrGeneratePersistentKeyPair();
-            X509Certificate cert = getOrGenerateCertificate(keyPair);
-            
-            PrivateKey privateKey = keyPair.getPrivate();
-            if (privateKey == null || cert == null) {
-                throw new IllegalStateException("无法加载或生成签名密钥");
+            SignerData signerData = getOrGeneratePersistentSignerData();
+            if (signerData == null || signerData.privateKey == null || signerData.certificate == null) {
+                throw new IllegalStateException("无法加载或生成签名密钥与证书");
             }
             
-            log("证书主体: " + cert.getSubjectDN());
+            log("证书主体: " + signerData.certificate.getSubjectDN());
 
             if (outputFile.getParentFile() != null && !outputFile.getParentFile().exists()) {
                 outputFile.getParentFile().mkdirs();
@@ -83,18 +82,18 @@ public class ApkSignerUtil {
             if (outputFile.exists()) outputFile.delete();
 
             inputApk = copyUriToTempFile(contentResolver, apkUri);
-            if (inputApk == null || !inputApk.exists() || inputApk.length() == 0) {
+            if (inputApk == null || !inputapkExists(inputApk)) {
                 log("❌ 无法读取输入 APK");
                 return false;
             }
             log("输入文件大小: " + inputApk.length() + " bytes");
 
             List<X509Certificate> x509CertList = new ArrayList<>();
-            x509CertList.add(cert);
+            x509CertList.add(signerData.certificate);
             
             ApkSigner.SignerConfig signerConfig = new ApkSigner.SignerConfig.Builder(
                     "AutoSign", 
-                    privateKey, 
+                    signerData.privateKey, 
                     x509CertList
             ).build();
 
@@ -133,55 +132,100 @@ public class ApkSignerUtil {
         }
     }
 
+    private boolean inputapkExists(File file) {
+        return file.exists() && file.length() > 0;
+    }
+
     /**
-     * 获取或生成持久化的 RSA 密钥对（使用 Java 对象序列化保存，完美保留所有 CRT 加速参数）
+     * 内部封装类：持有私钥与证书
      */
-    private synchronized KeyPair getOrGeneratePersistentKeyPair() {
-        if (cachedKeyPair != null) {
-            return cachedKeyPair;
+    private static class SignerData {
+        final PrivateKey privateKey;
+        final X509Certificate certificate;
+
+        SignerData(PrivateKey pk, X509Certificate cert) {
+            this.privateKey = pk;
+            this.certificate = cert;
+        }
+    }
+
+    /**
+     * 获取或生成持久化的私钥与证书（使用标准 PKCS#8 和 X.509 DER 字节持久化，绝对安全稳定）
+     */
+    private synchronized SignerData getOrGeneratePersistentSignerData() {
+        if (cachedPrivateKey != null && cachedCert != null) {
+            return new SignerData(cachedPrivateKey, cachedCert);
         }
 
-        File keyFile = new File(context.getFilesDir(), KEYPAIR_FILENAME);
-        if (keyFile.exists()) {
-            try (ObjectInputStream ois = new ObjectInputStream(new FileInputStream(keyFile))) {
-                cachedKeyPair = (KeyPair) ois.readObject();
-                if (cachedKeyPair != null && cachedKeyPair.getPrivate() != null && cachedKeyPair.getPublic() != null) {
-                    log("✅ 成功从本地加载持久化密钥对");
-                    return cachedKeyPair;
+        File keyFile = new File(context.getFilesDir(), PRIVATE_KEY_FILENAME);
+        File certFile = new File(context.getFilesDir(), CERT_FILENAME);
+
+        if (keyFile.exists() && certFile.exists()) {
+            try {
+                // 1. 读取并恢复私钥
+                byte[] keyBytes = readFileToBytes(keyFile);
+                KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+                PrivateKey privateKey = keyFactory.generatePrivate(new PKCS8EncodedKeySpec(keyBytes));
+
+                // 2. 读取并恢复证书
+                X509Certificate cert;
+                try (FileInputStream fis = new FileInputStream(certFile)) {
+                    CertificateFactory cf = CertificateFactory.getInstance("X.509");
+                    cert = (X509Certificate) cf.generateCertificate(fis);
+                }
+
+                if (privateKey != null && cert != null) {
+                    cachedPrivateKey = privateKey;
+                    cachedCert = cert;
+                    log("✅ 成功从本地加载持久化密钥与证书");
+                    return new SignerData(privateKey, cert);
                 }
             } catch (Exception e) {
-                log("⚠️ 加载持久化密钥文件失败，将重新生成: " + e.getMessage());
+                log("⚠️ 加载本地持久化密钥文件失败，将重新生成: " + e.getMessage());
                 keyFile.delete();
+                certFile.delete();
             }
         }
 
-        log("🔑 正在生成新的 RSA 密钥对并持久化...");
+        log("🔑 正在生成新的 RSA 密钥对与自签名证书...");
         try {
             KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
             kpg.initialize(KEY_SIZE);
-            cachedKeyPair = kpg.generateKeyPair();
+            KeyPair kp = kpg.generateKeyPair();
 
-            try (ObjectOutputStream oos = new ObjectOutputStream(new FileOutputStream(keyFile))) {
-                oos.writeObject(cachedKeyPair);
+            X509Certificate cert = generateSelfSignedCert(kp);
+
+            // 保存私钥 PKCS#8 字节
+            try (FileOutputStream fos = new FileOutputStream(keyFile)) {
+                fos.write(kp.getPrivate().getEncoded());
             }
-            log("✅ 新密钥对已成功持久化保存");
-            return cachedKeyPair;
+
+            // 保存证书 DER 字节
+            try (FileOutputStream fos = new FileOutputStream(certFile)) {
+                fos.write(cert.getEncoded());
+            }
+
+            cachedPrivateKey = kp.getPrivate();
+            cachedCert = cert;
+            log("✅ 新密钥与证书已成功持久化保存");
+            return new SignerData(cachedPrivateKey, cachedCert);
+
         } catch (Exception e) {
             log("❌ 生成或保存密钥对失败: " + e.getMessage());
             return null;
         }
     }
 
-    /**
-     * 获取或生成 X509 证书（基于持有的 KeyPair 在内存中生成）
-     */
-    private synchronized X509Certificate getOrGenerateCertificate(KeyPair kp) throws Exception {
-        if (cachedCert != null) {
-            return cachedCert;
+    private byte[] readFileToBytes(File file) throws IOException {
+        try (FileInputStream fis = new FileInputStream(file);
+             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096];
+            int len;
+            while ((len = fis.read(buffer)) != -1) {
+                bos.write(buffer, 0, len);
+            }
+            return bos.toByteArray();
         }
-        log("正在生成自签名证书...");
-        cachedCert = generateSelfSignedCert(kp);
-        return cachedCert;
     }
 
     private X509Certificate generateSelfSignedCert(KeyPair kp) throws Exception {
