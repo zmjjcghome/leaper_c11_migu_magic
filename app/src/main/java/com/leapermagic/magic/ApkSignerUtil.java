@@ -8,6 +8,8 @@ import android.util.Log;
 import com.android.apksig.ApkSigner;
 
 import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.KeyUsage;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
@@ -146,7 +148,14 @@ public class ApkSignerUtil {
             return true;
 
         } catch (Exception e) {
-            log("异常: 重新签名失败 - " + e.getMessage());
+            // 详细打印出底层原因，便于排查
+            String detailMsg = e.getMessage();
+            Throwable cause = e.getCause();
+            while (cause != null) {
+                detailMsg += " -> 根因: " + cause.getMessage();
+                cause = cause.getCause();
+            }
+            log("异常: 重新签名失败 - " + detailMsg);
             e.printStackTrace();
             if (outputFile != null && outputFile.exists()) {
                 outputFile.delete();
@@ -224,7 +233,7 @@ public class ApkSignerUtil {
             keyPairGen.initialize(2048);
             KeyPair keyPair = keyPairGen.generateKeyPair();
 
-            log("正在生成自签名 X.509 证书 (有效期 30 年)...");
+            log("正在生成自签名 X.509 证书 (包含 KeyUsage 扩展)...");
             long now = System.currentTimeMillis();
             Date startDate = new Date(now - 86400000L); // 昨天
             Date endDate = new Date(now + 30L * 365L * 86400000L); // 30年后
@@ -241,6 +250,10 @@ public class ApkSignerUtil {
                     issuer,
                     keyPair.getPublic()
             );
+
+            // 【关键修复】为证书添加数字签名用途扩展 (KeyUsage)，满足 apksig 校验
+            KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature);
+            certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
             ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256WithRSAEncryption")
                     .build(keyPair.getPrivate());
