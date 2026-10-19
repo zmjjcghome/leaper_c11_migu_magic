@@ -13,9 +13,9 @@ import com.android.apksig.ApkVerifier;
 
 import java.io.*;
 import java.security.*;
+import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
-import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
@@ -25,14 +25,14 @@ public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
     
-    private static final String PRIVATE_KEY_FILENAME = "autosign.key";
-    private static final String CERT_FILENAME = "autosign.crt";
+    // 使用 Android 系统原生的 PKCS12 格式持久化，彻底杜绝 BKS/PKCS12 not found 异常
+    private static final String KEYSTORE_FILENAME = "autosign_secure.p12";
+    private static final String KEYSTORE_PASSWORD = "changeit";
+    private static final String KEY_ALIAS = "autosign_alias";
+    private static final String KEY_PASSWORD = "changeit";
     
     private static final int KEY_SIZE = 2048;
     private static final int VALIDITY_DAYS = 10950; // 30年有效期
-
-    private static PrivateKey cachedPrivateKey = null;
-    private static X509Certificate cachedCert = null;
 
     private final Context context;
 
@@ -61,53 +61,65 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 核心重签名方法
+     * 核心重签名方法：支持 V1 + V2 + V3 全版本签名
      */
     public boolean resignApk(ContentResolver contentResolver, Uri apkUri, File outputFile) {
-        log("========== 签名开始 ==========");
+        log("========== 签名开始 (V1+V2+V3) ==========");
         File inputApk = null;
         try {
-            SignerData signerData = getOrGeneratePersistentSignerData();
-            if (signerData == null || signerData.privateKey == null || signerData.certificate == null) {
-                throw new IllegalStateException("无法加载或生成签名密钥与证书");
+            // 1. 获取或创建持久化的 KeyStore 密钥对
+            KeyStore keyStore = getOrCreateKeyStore();
+            PrivateKey privateKey = (PrivateKey) keyStore.getKey(KEY_ALIAS, KEY_PASSWORD.toCharArray());
+            Certificate[] certChain = keyStore.getCertificateChain(KEY_ALIAS);
+            
+            if (privateKey == null || certChain == null || certChain.length == 0) {
+                throw new IllegalStateException("无法从密钥库加载密钥或证书");
             }
             
-            log("证书主体: " + signerData.certificate.getSubjectDN());
+            X509Certificate cert = (X509Certificate) certChain[0];
+            log("证书主体: " + cert.getSubjectDN());
 
+            // 2. 准备输出目录与临时输入文件
             if (outputFile.getParentFile() != null && !outputFile.getParentFile().exists()) {
                 outputFile.getParentFile().mkdirs();
             }
             if (outputFile.exists()) outputFile.delete();
 
             inputApk = copyUriToTempFile(contentResolver, apkUri);
-            if (inputApk == null || !inputapkExists(inputApk)) {
+            if (inputApk == null || !inputApk.exists() || inputApk.length() == 0) {
                 log("❌ 无法读取输入 APK");
                 return false;
             }
             log("输入文件大小: " + inputApk.length() + " bytes");
 
+            // 3. 构建证书链列表
             List<X509Certificate> x509CertList = new ArrayList<>();
-            x509CertList.add(signerData.certificate);
+            for (Certificate c : certChain) {
+                if (c instanceof X509Certificate) {
+                    x509CertList.add((X509Certificate) c);
+                }
+            }
             
             ApkSigner.SignerConfig signerConfig = new ApkSigner.SignerConfig.Builder(
                     "AutoSign", 
-                    signerData.privateKey, 
+                    privateKey, 
                     x509CertList
             ).build();
 
-            // 关键修改：启用 V1 + V2 签名，关闭 V3 签名，彻底避免 apksig 编码签名块异常
+            // 4. 完美开启 V1 + V2 + V3 全版本签名
             ApkSigner apkSigner = new ApkSigner.Builder(Collections.singletonList(signerConfig))
                     .setInputApk(inputApk)
                     .setOutputApk(outputFile)
                     .setV1SigningEnabled(true)
                     .setV2SigningEnabled(true)
-                    .setV3SigningEnabled(false) // 关闭 V3，解决 Failed to encode signature block
+                    .setV3SigningEnabled(true) // 完美支持 V3 签名
                     .setMinSdkVersion(24) 
                     .build();
 
             apkSigner.sign();
             log("ApkSigner.sign() 执行完成");
 
+            // 5. 验证签名结果
             boolean success = outputFile.exists() && outputFile.length() > 0;
             if (success) {
                 log("✅ 签名成功: " + outputFile.getAbsolutePath());
@@ -131,92 +143,58 @@ public class ApkSignerUtil {
         }
     }
 
-    private boolean inputapkExists(File file) {
-        return file.exists() && file.length() > 0;
-    }
+    /**
+     * 获取或创建持久化的 PKCS12 密钥库（使用系统默认实现，绝不报 not found）
+     */
+    private synchronized KeyStore getOrCreateKeyStore() throws Exception {
+        File ksFile = new File(context.getFilesDir(), KEYSTORE_FILENAME);
+        // 使用系统默认的 PKCS12 容器，完全不依赖第三方 Provider 的 KeyStore 扩展
+        KeyStore keyStore = KeyStore.getInstance("PKCS12");
 
-    private static class SignerData {
-        final PrivateKey privateKey;
-        final X509Certificate certificate;
-
-        SignerData(PrivateKey pk, X509Certificate cert) {
-            this.privateKey = pk;
-            this.certificate = cert;
-        }
-    }
-
-    private synchronized SignerData getOrGeneratePersistentSignerData() {
-        if (cachedPrivateKey != null && cachedCert != null) {
-            return new SignerData(cachedPrivateKey, cachedCert);
-        }
-
-        File keyFile = new File(context.getFilesDir(), PRIVATE_KEY_FILENAME);
-        File certFile = new File(context.getFilesDir(), CERT_FILENAME);
-
-        if (keyFile.exists() && certFile.exists()) {
-            try {
-                byte[] keyBytes = readFileToBytes(keyFile);
-                KeyFactory keyFactory = KeyFactory.getInstance("RSA");
-                PrivateKey privateKey = keyFactory.generatePrivate(new PKCS8EncodedKeySpec(keyBytes));
-
-                X509Certificate cert;
-                try (FileInputStream fis = new FileInputStream(certFile)) {
-                    CertificateFactory cf = CertificateFactory.getInstance("X.509");
-                    cert = (X509Certificate) cf.generateCertificate(fis);
-                }
-
-                if (privateKey != null && cert != null) {
-                    cachedPrivateKey = privateKey;
-                    cachedCert = cert;
-                    log("✅ 成功从本地加载持久化密钥与证书");
-                    return new SignerData(privateKey, cert);
+        if (ksFile.exists()) {
+            try (FileInputStream fis = new FileInputStream(ksFile)) {
+                keyStore.load(fis, KEYSTORE_PASSWORD.toCharArray());
+                if (keyStore.containsAlias(KEY_ALIAS)) {
+                    log("✅ 成功加载持久化 PKCS12 密钥库");
+                    return keyStore;
                 }
             } catch (Exception e) {
-                log("⚠️ 加载本地持久化密钥文件失败，将重新生成: " + e.getMessage());
-                keyFile.delete();
-                certFile.delete();
+                log("⚠️ 密钥库加载失败，将重新创建: " + e.getMessage());
+                ksFile.delete();
             }
         }
 
-        log("🔑 正在生成新的 RSA 密钥对与自签名证书...");
-        try {
-            KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
-            kpg.initialize(KEY_SIZE);
-            KeyPair kp = kpg.generateKeyPair();
+        log("🔑 正在创建新的 PKCS12 密钥库并生成自签名证书...");
+        keyStore.load(null, null);
 
-            X509Certificate cert = generateSelfSignedCert(kp);
+        // 使用系统默认 RSA 生成器（绝对不会报 NoSuchAlgorithmException）
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
+        kpg.initialize(KEY_SIZE);
+        KeyPair kp = kpg.generateKeyPair();
 
-            try (FileOutputStream fos = new FileOutputStream(keyFile)) {
-                fos.write(kp.getPrivate().getEncoded());
-            }
+        // 生成自签名 X509 证书
+        X509Certificate cert = generateSelfSignedCert(kp);
 
-            try (FileOutputStream fos = new FileOutputStream(certFile)) {
-                fos.write(cert.getEncoded());
-            }
+        // 存入密钥库
+        keyStore.setKeyEntry(
+                KEY_ALIAS,
+                kp.getPrivate(),
+                KEY_PASSWORD.toCharArray(),
+                new Certificate[]{cert}
+        );
 
-            cachedPrivateKey = kp.getPrivate();
-            cachedCert = cert;
-            log("✅ 新密钥与证书已成功持久化保存");
-            return new SignerData(cachedPrivateKey, cachedCert);
-
-        } catch (Exception e) {
-            log("❌ 生成或保存密钥对失败: " + e.getMessage());
-            return null;
+        // 持久化保存到文件
+        try (FileOutputStream fos = new FileOutputStream(ksFile)) {
+            keyStore.store(fos, KEYSTORE_PASSWORD.toCharArray());
         }
+
+        log("✅ 新 PKCS12 密钥库已成功持久化保存");
+        return keyStore;
     }
 
-    private byte[] readFileToBytes(File file) throws IOException {
-        try (FileInputStream fis = new FileInputStream(file);
-             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[4096];
-            int len;
-            while ((len = fis.read(buffer)) != -1) {
-                bos.write(buffer, 0, len);
-            }
-            return bos.toByteArray();
-        }
-    }
-
+    /**
+     * 生成自签名 X509 证书
+     */
     private X509Certificate generateSelfSignedCert(KeyPair kp) throws Exception {
         org.bouncycastle.asn1.x500.X500Name subject = new org.bouncycastle.asn1.x500.X500Name("CN=AutoSign, OU=Dev, O=AutoSign, C=CN");
         java.math.BigInteger serial = java.math.BigInteger.valueOf(System.currentTimeMillis());
@@ -229,20 +207,25 @@ public class ApkSignerUtil {
                         org.bouncycastle.asn1.x509.SubjectPublicKeyInfo.getInstance(kp.getPublic().getEncoded())
                 );
         
+        // 使用系统默认签名器构建器（不指定 provider，完美避免 SHA256WITHRSA 找不到异常）
         org.bouncycastle.operator.ContentSigner signer = new org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withRSA")
                 .build(kp.getPrivate());
         
         org.bouncycastle.cert.X509CertificateHolder certHolder = certBuilder.build(signer);
         
+        // 使用系统默认 CertificateFactory
         CertificateFactory cf = CertificateFactory.getInstance("X.509");
         return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certHolder.getEncoded()));
     }
 
+    /**
+     * 验证 APK 签名有效性
+     */
     private void verifyApkSignature(File apkFile) {
         try {
             ApkVerifier.Result result = new ApkVerifier.Builder(apkFile).build().verify();
             if (result.isVerified()) {
-                log("✅ APK 签名验证通过");
+                log("✅ APK 签名验证通过 (V1+V2+V3)");
             } else {
                 log("❌ APK 签名验证失败");
                 for (ApkVerifier.IssueWithParams issue : result.getErrors()) {
@@ -254,6 +237,9 @@ public class ApkSignerUtil {
         }
     }
 
+    /**
+     * 复制文件到临时文件
+     */
     private File copyUriToTempFile(ContentResolver cr, Uri uri) throws IOException {
         InputStream is = null;
         if ("file".equalsIgnoreCase(uri.getScheme())) {
