@@ -6,7 +6,6 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Environment;
 import android.provider.OpenableColumns;
-import android.util.Base64;
 import android.util.Log;
 
 import com.android.apksig.ApkSigner;
@@ -28,7 +27,6 @@ public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
     
-    // 直接存储私钥和证书的文件，不通过 KeyStore 容器
     private static final String PRIVATE_KEY_FILE = "autosign_private.key";
     private static final String CERT_FILE = "autosign_cert.crt";
     
@@ -42,17 +40,17 @@ public class ApkSignerUtil {
     }
 
     private SignLogCallback logCallback;
-    
-    // BC Provider 单例
-    private static final BouncyCastleProvider BC_PROVIDER = new BouncyCastleProvider();
 
     static {
-        Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME);
-        Security.insertProviderAt(BC_PROVIDER, 1);
+        // 确保 BC Provider 优先注册并命名为 "BC"
+        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
+            Security.insertProviderAt(new BouncyCastleProvider(), 1);
+        }
     }
 
     public ApkSignerUtil(Context context) {
         this.context = context.getApplicationContext();
+        ensureProvider();
     }
 
     public ApkSignerUtil(Context context, SignLogCallback callback) {
@@ -69,14 +67,21 @@ public class ApkSignerUtil {
         if (logCallback != null) logCallback.onLog(msg);
     }
 
+    private static void ensureProvider() {
+        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
+            Security.insertProviderAt(new BouncyCastleProvider(), 1);
+        }
+    }
+
     /**
-     * 核心重签名方法，支持V1+V2+V3全版本签名（完全抛弃 KeyStore，直接读取密钥文件）
+     * 核心重签名方法
      */
     public boolean resignApk(ContentResolver contentResolver, Uri apkUri, File outputFile) {
         log("========== 签名开始 ==========");
         File inputApk = null;
         try {
-            // 1. 获取或直接生成密钥对与证书（不依赖任何 KeyStore）
+            ensureProvider();
+            
             KeyPair keyPair = getOrCreateKeyPair();
             X509Certificate cert = getOrCreateCertificate(keyPair);
             
@@ -87,7 +92,6 @@ public class ApkSignerUtil {
             
             log("证书主体: " + cert.getSubjectDN());
 
-            // 2. 准备输出目录与临时输入文件
             if (outputFile.getParentFile() != null && !outputFile.getParentFile().exists()) {
                 outputFile.getParentFile().mkdirs();
             }
@@ -100,7 +104,6 @@ public class ApkSignerUtil {
             }
             log("输入文件大小: " + inputApk.length() + " bytes");
 
-            // 3. 构建签名配置
             List<X509Certificate> x509CertList = new ArrayList<>();
             x509CertList.add(cert);
             
@@ -110,7 +113,6 @@ public class ApkSignerUtil {
                     x509CertList
             ).build();
 
-            // 4. 构建并执行签名
             ApkSigner apkSigner = new ApkSigner.Builder(Collections.singletonList(signerConfig))
                     .setInputApk(inputApk)
                     .setOutputApk(outputFile)
@@ -123,7 +125,6 @@ public class ApkSignerUtil {
             apkSigner.sign();
             log("ApkSigner.sign() 执行完成");
 
-            // 5. 验证签名结果
             boolean success = outputFile.exists() && outputFile.length() > 0;
             if (success) {
                 log("✅ 签名成功: " + outputFile.getAbsolutePath());
@@ -146,7 +147,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 获取或生成 RSA 密钥对，直接以原始字节保存在应用私有目录下
+     * 获取或生成 RSA 密钥对（显式指定使用字符串 "BC" 提供者）
      */
     private KeyPair getOrCreateKeyPair() throws Exception {
         File keyFile = new File(context.getFilesDir(), PRIVATE_KEY_FILE);
@@ -154,18 +155,14 @@ public class ApkSignerUtil {
         if (keyFile.exists()) {
             try {
                 byte[] keyBytes = readFileToBytes(keyFile);
-                KeyFactory keyFactory = KeyFactory.getInstance("RSA", BC_PROVIDER);
+                KeyFactory keyFactory = KeyFactory.getInstance("RSA", BouncyCastleProvider.PROVIDER_NAME);
                 PrivateKey privateKey = keyFactory.generatePrivate(new PKCS8EncodedKeySpec(keyBytes));
                 
-                // 由于只存了私钥，我们同时检查证书是否存在
                 File certFile = new File(context.getFilesDir(), CERT_FILE);
                 if (certFile.exists()) {
-                    log("加载现有签名密钥对成功");
-                    // 顺便生成对应的公钥配对返回
-                    // 为了简单起见，如果私钥存在，我们直接用它和证书配合
-                    // 这里我们需要恢复出公钥，或者直接重新生成
                     PublicKey pubKey = getCertificatePublicKey(certFile);
                     if (pubKey != null) {
+                        log("加载现有签名密钥对成功");
                         return new KeyPair(pubKey, privateKey);
                     }
                 }
@@ -177,11 +174,10 @@ public class ApkSignerUtil {
         }
 
         log("生成新的 RSA 密钥对");
-        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA", BC_PROVIDER);
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA", BouncyCastleProvider.PROVIDER_NAME);
         kpg.initialize(KEY_SIZE);
         KeyPair kp = kpg.generateKeyPair();
 
-        // 保存私钥字节
         try (FileOutputStream fos = new FileOutputStream(keyFile)) {
             fos.write(kp.getPrivate().getEncoded());
         }
@@ -196,7 +192,7 @@ public class ApkSignerUtil {
         File certFile = new File(context.getFilesDir(), CERT_FILE);
         if (certFile.exists()) {
             try (FileInputStream fis = new FileInputStream(certFile)) {
-                CertificateFactory cf = CertificateFactory.getInstance("X.509", BC_PROVIDER);
+                CertificateFactory cf = CertificateFactory.getInstance("X.509", BouncyCastleProvider.PROVIDER_NAME);
                 return (X509Certificate) cf.generateCertificate(fis);
             } catch (Exception e) {
                 certFile.delete();
@@ -211,12 +207,9 @@ public class ApkSignerUtil {
         return cert;
     }
 
-    /**
-     * 从已有证书文件中提取 PublicKey
-     */
     private PublicKey getCertificatePublicKey(File certFile) {
         try (FileInputStream fis = new FileInputStream(certFile)) {
-            CertificateFactory cf = CertificateFactory.getInstance("X.509", BC_PROVIDER);
+            CertificateFactory cf = CertificateFactory.getInstance("X.509", BouncyCastleProvider.PROVIDER_NAME);
             X509Certificate cert = (X509Certificate) cf.generateCertificate(fis);
             return cert.getPublicKey();
         } catch (Exception e) {
@@ -224,9 +217,6 @@ public class ApkSignerUtil {
         }
     }
 
-    /**
-     * 生成自签名 X509 证书
-     */
     private X509Certificate generateSelfSignedCert(KeyPair kp) throws Exception {
         org.bouncycastle.asn1.x500.X500Name subject = new org.bouncycastle.asn1.x500.X500Name("CN=AutoSign, OU=Dev, O=AutoSign, C=CN");
         java.math.BigInteger serial = java.math.BigInteger.valueOf(System.currentTimeMillis());
@@ -240,12 +230,12 @@ public class ApkSignerUtil {
                 );
         
         org.bouncycastle.operator.ContentSigner signer = new org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withRSA")
-                .setProvider(BC_PROVIDER)
+                .setProvider(BouncyCastleProvider.PROVIDER_NAME)
                 .build(kp.getPrivate());
         
         org.bouncycastle.cert.X509CertificateHolder certHolder = certBuilder.build(signer);
         
-        CertificateFactory cf = CertificateFactory.getInstance("X.509", BC_PROVIDER);
+        CertificateFactory cf = CertificateFactory.getInstance("X.509", BouncyCastleProvider.PROVIDER_NAME);
         return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certHolder.getEncoded()));
     }
 
@@ -261,9 +251,6 @@ public class ApkSignerUtil {
         }
     }
 
-    /**
-     * 验证 APK 签名有效性
-     */
     private void verifyApkSignature(File apkFile) {
         try {
             ApkVerifier.Result result = new ApkVerifier.Builder(apkFile).build().verify();
@@ -280,9 +267,6 @@ public class ApkSignerUtil {
         }
     }
 
-    /**
-     * 复制文件到临时文件
-     */
     private File copyUriToTempFile(ContentResolver cr, Uri uri) throws IOException {
         InputStream is = null;
         if ("file".equalsIgnoreCase(uri.getScheme())) {
