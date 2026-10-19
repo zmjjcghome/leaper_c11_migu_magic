@@ -1051,6 +1051,7 @@ public class MainActivity extends AppCompatActivity {
             actualSignedApkFile = ApkSignerUtil.generateOutputFile(this, selectedApkUri);
             if (actualSignedApkFile == null) {
                 uiHandler.post(() -> {
+                    
                     tvStatus.setText("无法确定输出路径");
                     btnResignApk.setEnabled(true);
                     Toast.makeText(MainActivity.this, "无法确定输出路径", Toast.LENGTH_SHORT).show();
@@ -1066,6 +1067,8 @@ public class MainActivity extends AppCompatActivity {
             );
             uiHandler.post(() -> {
                 if (success) {
+                    selectedApkUri = Uri.fromFile(actualSignedApkFile);
+                    
                     tvStatus.setText("签名完成 → " + actualSignedApkFile.getAbsolutePath());
                     tvSelectedApk.setText("已选择: " + actualSignedApkFile.getAbsolutePath());
                     btnResignApk.setEnabled(true);
