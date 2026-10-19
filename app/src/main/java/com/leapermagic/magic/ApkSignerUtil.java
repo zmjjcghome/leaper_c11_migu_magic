@@ -25,14 +25,12 @@ public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
     
-    // 标准二进制持久化文件名
     private static final String PRIVATE_KEY_FILENAME = "autosign.key";
     private static final String CERT_FILENAME = "autosign.crt";
     
     private static final int KEY_SIZE = 2048;
     private static final int VALIDITY_DAYS = 10950; // 30年有效期
 
-    // 内存缓存，避免重复读取文件
     private static PrivateKey cachedPrivateKey = null;
     private static X509Certificate cachedCert = null;
 
@@ -97,12 +95,13 @@ public class ApkSignerUtil {
                     x509CertList
             ).build();
 
+            // 关键修改：启用 V1 + V2 签名，关闭 V3 签名，彻底避免 apksig 编码签名块异常
             ApkSigner apkSigner = new ApkSigner.Builder(Collections.singletonList(signerConfig))
                     .setInputApk(inputApk)
                     .setOutputApk(outputFile)
                     .setV1SigningEnabled(true)
                     .setV2SigningEnabled(true)
-                    .setV3SigningEnabled(true)
+                    .setV3SigningEnabled(false) // 关闭 V3，解决 Failed to encode signature block
                     .setMinSdkVersion(24) 
                     .build();
 
@@ -136,9 +135,6 @@ public class ApkSignerUtil {
         return file.exists() && file.length() > 0;
     }
 
-    /**
-     * 内部封装类：持有私钥与证书
-     */
     private static class SignerData {
         final PrivateKey privateKey;
         final X509Certificate certificate;
@@ -149,9 +145,6 @@ public class ApkSignerUtil {
         }
     }
 
-    /**
-     * 获取或生成持久化的私钥与证书（使用标准 PKCS#8 和 X.509 DER 字节持久化，绝对安全稳定）
-     */
     private synchronized SignerData getOrGeneratePersistentSignerData() {
         if (cachedPrivateKey != null && cachedCert != null) {
             return new SignerData(cachedPrivateKey, cachedCert);
@@ -162,12 +155,10 @@ public class ApkSignerUtil {
 
         if (keyFile.exists() && certFile.exists()) {
             try {
-                // 1. 读取并恢复私钥
                 byte[] keyBytes = readFileToBytes(keyFile);
                 KeyFactory keyFactory = KeyFactory.getInstance("RSA");
                 PrivateKey privateKey = keyFactory.generatePrivate(new PKCS8EncodedKeySpec(keyBytes));
 
-                // 2. 读取并恢复证书
                 X509Certificate cert;
                 try (FileInputStream fis = new FileInputStream(certFile)) {
                     CertificateFactory cf = CertificateFactory.getInstance("X.509");
@@ -195,12 +186,10 @@ public class ApkSignerUtil {
 
             X509Certificate cert = generateSelfSignedCert(kp);
 
-            // 保存私钥 PKCS#8 字节
             try (FileOutputStream fos = new FileOutputStream(keyFile)) {
                 fos.write(kp.getPrivate().getEncoded());
             }
 
-            // 保存证书 DER 字节
             try (FileOutputStream fos = new FileOutputStream(certFile)) {
                 fos.write(cert.getEncoded());
             }
