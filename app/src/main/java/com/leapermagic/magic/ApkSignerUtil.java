@@ -7,15 +7,15 @@ import android.util.Log;
 
 import com.android.apksig.ApkSigner;
 
-import org.bouncycastle.asn1.x500.X500Name;
-import org.bouncycastle.asn1.x509.Extension;
-import org.bouncycastle.asn1.x509.KeyUsage;
-import org.bouncycastle.cert.X509CertificateHolder;
-import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
-import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import org.bouncycastle.operator.ContentSigner;
-import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
+import org.spongycastle.asn1.x500.X500Name;
+import org.spongycastle.asn1.x509.Extension;
+import org.spongycastle.asn1.x509.KeyUsage;
+import org.spongycastle.cert.X509CertificateHolder;
+import org.spongycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.spongycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.spongycastle.jce.provider.BouncyCastleProvider;
+import org.spongycastle.operator.ContentSigner;
+import org.spongycastle.operator.jcajce.JcaContentSignerBuilder;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -38,9 +38,10 @@ public class ApkSignerUtil {
     private static final String KEY_ALIAS = "androiddebugkey";
     private static final char[] KEY_PASSWORD = "android".toCharArray();
 
+    // 动态注册 SpongyCastle 提供者
     static {
         try {
-            Security.removeProvider("BC");
+            Security.removeProvider("SC");
             Security.insertProviderAt(new BouncyCastleProvider(), 1);
         } catch (Exception e) {
             e.printStackTrace();
@@ -188,7 +189,7 @@ public class ApkSignerUtil {
         if (localKeystoreFile.exists()) {
             try {
                 log("检测到本地已存在 Keystore，正在校验有效性: " + localKeystoreFile.getAbsolutePath());
-                KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
+                KeyStore keyStore = KeyStore.getInstance("PKCS12", "SC");
                 try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                     keyStore.load(fis, KEY_PASSWORD);
                 }
@@ -221,7 +222,7 @@ public class ApkSignerUtil {
             initialized = true;
             log("已成功从 assets 复制 debug.keystore。");
         } catch (Exception e) {
-            log("assets 中无 debug.keystore，正在自动生成全新证书...");
+            log("assets 中无 debug.keystore，正在通过 SpongyCastle 自动生成全新证书...");
         }
 
         // 2. 自动生成全新合格证书
@@ -234,7 +235,7 @@ public class ApkSignerUtil {
 
         // 加载最新生成的 KeyStore
         try {
-            KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
+            KeyStore keyStore = KeyStore.getInstance("PKCS12", "SC");
             try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                 keyStore.load(fis, KEY_PASSWORD);
             }
@@ -247,7 +248,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 自动生成符合 apksig 规范的 KeyStore
+     * 使用 SpongyCastle 自动生成符合 apksig 规范的 KeyStore
      */
     private boolean generateAndSaveKeystore(File keystoreFile) {
         try {
@@ -277,18 +278,17 @@ public class ApkSignerUtil {
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment);
             certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
-            // 【关键修复】将签名算法名称调整为标准的 "SHA256withRSA"（大小写敏感）
             ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256withRSA")
-                    .setProvider("BC")
+                    .setProvider("SC")
                     .build(keyPair.getPrivate());
 
             X509CertificateHolder certHolder = certBuilder.build(contentSigner);
             X509Certificate cert = new JcaX509CertificateConverter()
-                    .setProvider("BC")
+                    .setProvider("SC")
                     .getCertificate(certHolder);
 
-            // 创建 PKCS12 KeyStore
-            KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
+            // 创建 PKCS12 KeyStore，提供者指定为 "SC" (SpongyCastle)
+            KeyStore keyStore = KeyStore.getInstance("PKCS12", "SC");
             keyStore.load(null, null);
             keyStore.setKeyEntry(KEY_ALIAS, keyPair.getPrivate(), KEY_PASSWORD, new java.security.cert.Certificate[]{cert});
 
