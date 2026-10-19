@@ -27,8 +27,8 @@ public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
     
-    // 密钥库配置（改回标准的 BKS 格式，配合 BC Provider 使用最稳定）
-    private static final String KEYSTORE_FILENAME = "autosign.bks";
+    // 使用通用的 PKCS12 格式（Android 8.0+ 原生支持，通用且不会报 BKS not found）
+    private static final String KEYSTORE_FILENAME = "autosign.p12";
     private static final String KEYSTORE_PASSWORD = "changeit";
     private static final String KEY_ALIAS = "autosign_alias";
     private static final String KEY_PASSWORD = "changeit";
@@ -47,7 +47,6 @@ public class ApkSignerUtil {
     private static final BouncyCastleProvider BC_PROVIDER = new BouncyCastleProvider();
 
     static {
-        // 移除旧 BC 并插入到第 1 位置，让 JCA 签名优先使用 BC，防止 Conscrypt 密钥类型冲突
         Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME);
         Security.insertProviderAt(BC_PROVIDER, 1);
     }
@@ -77,7 +76,6 @@ public class ApkSignerUtil {
         log("========== 签名开始 ==========");
         File inputApk = null;
         try {
-            // 1. 加载/生成标准密钥库
             KeyStore keyStore = getOrCreateKeyStore();
             PrivateKey privateKey = (PrivateKey) keyStore.getKey(KEY_ALIAS, KEY_PASSWORD.toCharArray());
             Certificate[] certChain = keyStore.getCertificateChain(KEY_ALIAS);
@@ -90,7 +88,6 @@ public class ApkSignerUtil {
             log("使用密钥别名: " + KEY_ALIAS);
             log("证书主体: " + cert.getSubjectDN());
 
-            // 2. 准备输出目录与临时输入文件
             if (outputFile.getParentFile() != null && !outputFile.getParentFile().exists()) {
                 outputFile.getParentFile().mkdirs();
             }
@@ -103,7 +100,6 @@ public class ApkSignerUtil {
             }
             log("输入文件大小: " + inputApk.length() + " bytes");
 
-            // 3. 转换证书链
             List<X509Certificate> x509CertList = new ArrayList<>();
             for (Certificate c : certChain) {
                 if (c instanceof X509Certificate) {
@@ -111,14 +107,12 @@ public class ApkSignerUtil {
                 }
             }
             
-            // 构建签名配置
             ApkSigner.SignerConfig signerConfig = new ApkSigner.SignerConfig.Builder(
                     "AutoSign", 
                     privateKey, 
                     x509CertList
             ).build();
 
-            // 4. 构建签名器并显式指定 minSdkVersion 避免 Manifest 解析异常
             ApkSigner apkSigner = new ApkSigner.Builder(Collections.singletonList(signerConfig))
                     .setInputApk(inputApk)
                     .setOutputApk(outputFile)
@@ -128,11 +122,9 @@ public class ApkSignerUtil {
                     .setMinSdkVersion(24) 
                     .build();
 
-            // 5. 执行签名
             apkSigner.sign();
             log("ApkSigner.sign() 执行完成");
 
-            // 6. 验证签名结果
             boolean success = outputFile.exists() && outputFile.length() > 0;
             if (success) {
                 log("✅ 签名成功: " + outputFile.getAbsolutePath());
@@ -155,11 +147,17 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 获取或创建 BKS 密钥库（指定使用 BC_PROVIDER）
+     * 获取或创建密钥库（不显式绑定 Provider，由系统自动选择默认的 PKCS12 实现，彻底解决 not found 报错）
      */
     private synchronized KeyStore getOrCreateKeyStore() throws Exception {
         File ksFile = new File(context.getFilesDir(), KEYSTORE_FILENAME);
-        KeyStore keyStore = KeyStore.getInstance("BKS", BC_PROVIDER);
+        KeyStore keyStore;
+        try {
+            keyStore = KeyStore.getInstance("PKCS12");
+        } catch (Exception e) {
+            // 降级使用默认类型
+            keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+        }
 
         if (ksFile.exists()) {
             try (FileInputStream fis = new FileInputStream(ksFile)) {
@@ -178,7 +176,7 @@ public class ApkSignerUtil {
                 log("加载现有密钥库成功");
             }
         } else {
-            log("创建新的 BKS 密钥库");
+            log("创建新的密钥库");
             keyStore.load(null, null);
             generateNewKey(keyStore, ksFile);
         }
@@ -187,7 +185,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 生成新 RSA 密钥对并保存
+     * 生成新 RSA 密钥对并保存（显式指定使用 BC_PROVIDER）
      */
     private void generateNewKey(KeyStore keyStore, File ksFile) throws Exception {
         KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA", BC_PROVIDER);
@@ -234,9 +232,6 @@ public class ApkSignerUtil {
         return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certHolder.getEncoded()));
     }
 
-    /**
-     * 验证 APK 签名有效性
-     */
     private void verifyApkSignature(File apkFile) {
         try {
             ApkVerifier.Result result = new ApkVerifier.Builder(apkFile).build().verify();
@@ -253,9 +248,6 @@ public class ApkSignerUtil {
         }
     }
 
-    /**
-     * 复制 Content/File Uri 到临时文件
-     */
     private File copyUriToTempFile(ContentResolver cr, Uri uri) throws IOException {
         InputStream is = null;
         if ("file".equalsIgnoreCase(uri.getScheme())) {
