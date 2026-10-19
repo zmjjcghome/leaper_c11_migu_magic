@@ -81,7 +81,7 @@ public class ApkSignerUtil {
 
     /**
      * 重新签名 APK
-     * 1. 支持 Android 9+ (API 28+)
+     * 1. 支持 Android 9+ 运行环境
      * 2. 同时启用 V1、V2、V3 签名方案
      */
     public boolean resignApk(ContentResolver resolver, Uri inputUri, File outputFile) {
@@ -139,8 +139,8 @@ public class ApkSignerUtil {
                     .setOutputApk(outputFile)
                     .setV1SigningEnabled(true) // V1 签名
                     .setV2SigningEnabled(true) // V2 签名
-                    .setV3SigningEnabled(true) // V3 签名 (Android 9+)
-                    .setMinSdkVersion(28);     // 【关键修复】显式指定最小 SDK 版本，防止 V3 签名块编码失败
+                    .setV3SigningEnabled(true) // V3 签名
+                    .setMinSdkVersion(1);      // 【关键修复】设置为 1，完美兼容所有 minSdk 的 APK，防止 V3 签名块编码失败
 
             log("开始执行多版本签名算法...");
             builder.build().sign();
@@ -255,7 +255,7 @@ public class ApkSignerUtil {
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature);
             certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
-            ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256WithRSAEncryption")
+(`ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256WithRSAEncryption")`
                     .build(keyPair.getPrivate());
 
             X509CertificateHolder certHolder = certBuilder.build(contentSigner);
