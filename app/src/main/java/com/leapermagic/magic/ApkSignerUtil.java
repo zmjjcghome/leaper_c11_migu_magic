@@ -7,15 +7,15 @@ import android.util.Log;
 
 import com.android.apksig.ApkSigner;
 
-import org.spongycastle.asn1.x500.X500Name;
-import org.spongycastle.asn1.x509.Extension;
-import org.spongycastle.asn1.x509.KeyUsage;
-import org.spongycastle.cert.X509CertificateHolder;
-import org.spongycastle.cert.jcajce.JcaX509CertificateConverter;
-import org.spongycastle.cert.jcajce.JcaX509v3CertificateBuilder;
-import org.spongycastle.jce.provider.BouncyCastleProvider;
-import org.spongycastle.operator.ContentSigner;
-import org.spongycastle.operator.jcajce.JcaContentSignerBuilder;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.KeyUsage;
+import org.bouncycastle.cert.X509CertificateHolder;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.bouncycastle.operator.ContentSigner;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -38,10 +38,10 @@ public class ApkSignerUtil {
     private static final String KEY_ALIAS = "androiddebugkey";
     private static final char[] KEY_PASSWORD = "android".toCharArray();
 
-    // 动态注册 SpongyCastle 提供者
+    // 动态注册 BouncyCastle 提供者
     static {
         try {
-            Security.removeProvider("SC");
+            Security.removeProvider("BC");
             Security.insertProviderAt(new BouncyCastleProvider(), 1);
         } catch (Exception e) {
             e.printStackTrace();
@@ -118,9 +118,9 @@ public class ApkSignerUtil {
             }
             log("输入 APK 临时文件准备就绪: " + inputTempFile.getAbsolutePath());
 
-            // 加载或自动生成本地 Keystore
-            log("正在加载签名密钥...");
-            KeyStore keyStore = loadDebugKeyStore();
+            // 检查或通过 Java 代码自动生成 Keystore
+            log("正在加载或动态生成签名密钥...");
+            KeyStore keyStore = getOrCreateAndLoadKeyStore();
             if (keyStore == null) {
                 log("错误: 无法加载或生成签名 Keystore");
                 return false;
@@ -145,13 +145,14 @@ public class ApkSignerUtil {
                     "CERT", privateKey, Collections.singletonList(cert)
             ).build();
 
-            // 配置 ApkSigner 构建器：同时开启 V1, V2, V3 签名
+            // 配置 ApkSigner 构建器：同时开启 V1, V2, V3 签名，显式指定最小支持版本 28 (Android 9+)
             ApkSigner.Builder builder = new ApkSigner.Builder(Collections.singletonList(signerConfig))
                     .setInputApk(inputTempFile)
                     .setOutputApk(outputFile)
                     .setV1SigningEnabled(true)  // V1 签名
                     .setV2SigningEnabled(true)  // V2 签名
-                    .setV3SigningEnabled(true); // V3 签名 (Android 9+)
+                    .setV3SigningEnabled(true)  // V3 签名 (Android 9+)
+                    .setMinSdkVersion(28);     // 确保适配 Android 9+
 
             log("开始执行多版本 (V1/V2/V3) 签名算法...");
             builder.build().sign();
@@ -180,87 +181,66 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 加载本地 Keystore
+     * 获取或通过 Java 代码动态生成 Keystore
      */
-    private KeyStore loadDebugKeyStore() {
-        File localKeystoreFile = new File(context.getFilesDir(), KEYSTORE_NAME);
-
-        // 如果本地已存在 keystore，先校验有效性
-        if (localKeystoreFile.exists()) {
-            try {
-                log("检测到本地已存在 Keystore，正在校验有效性: " + localKeystoreFile.getAbsolutePath());
-                KeyStore keyStore = KeyStore.getInstance("PKCS12", "SC");
-                try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
-                    keyStore.load(fis, KEY_PASSWORD);
-                }
-                if (keyStore.containsAlias(KEY_ALIAS) && keyStore.getCertificate(KEY_ALIAS) != null) {
-                    log("本地 Keystore 校验通过！");
-                    return keyStore;
-                } else {
-                    log("本地 Keystore 无效或损坏，删除旧文件并重新生成...");
-                    localKeystoreFile.delete();
-                }
-            } catch (Exception e) {
-                log("读取本地 Keystore 异常 (" + e.getMessage() + ")，删除坏文件并重新生成...");
-                localKeystoreFile.delete();
-            }
-        }
-
-        // 初始化/重新生成本地 Keystore
-        log("正在初始化全新的本地 Keystore...");
-        boolean initialized = false;
-
-        // 1. 尝试从 assets 复制
-        try (InputStream is = context.getAssets().open(KEYSTORE_NAME);
-             FileOutputStream fos = new FileOutputStream(localKeystoreFile)) {
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = is.read(buffer)) != -1) {
-                fos.write(buffer, 0, read);
-            }
-            fos.flush();
-            initialized = true;
-            log("已成功从 assets 复制 debug.keystore。");
-        } catch (Exception e) {
-            log("assets 中无 debug.keystore，正在通过 SpongyCastle 自动生成全新证书...");
-        }
-
-        // 2. 自动生成全新合格证书
-        if (!initialized) {
-            boolean generated = generateAndSaveKeystore(localKeystoreFile);
-            if (!generated) {
-                return null;
-            }
-        }
-
-        // 加载最新生成的 KeyStore
+    private KeyStore getOrCreateAndLoadKeyStore() {
         try {
-            KeyStore keyStore = KeyStore.getInstance("PKCS12", "SC");
+            File localKeystoreFile = new File(context.getFilesDir(), KEYSTORE_NAME);
+
+            // 如果本地文件不存在，直接通过 Java 代码动态生成
+            if (!localKeystoreFile.exists()) {
+                log("本地未检测到 Keystore，正在通过 Java 代码动态生成...");
+                boolean generated = generateAndSaveKeystore(localKeystoreFile);
+                if (!generated) {
+                    return null;
+                }
+            } else {
+                log("检测到本地已存在 Keystore，正在校验: " + localKeystoreFile.getAbsolutePath());
+                try {
+                    KeyStore testStore = KeyStore.getInstance("PKCS12", "BC");
+                    try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
+                        testStore.load(fis, KEY_PASSWORD);
+                    }
+                    if (!testStore.containsAlias(KEY_ALIAS)) {
+                        log("本地 Keystore 缺少别名，重新生成...");
+                        localKeystoreFile.delete();
+                        generateAndSaveKeystore(localKeystoreFile);
+                    }
+                } catch (Exception e) {
+                    log("本地 Keystore 损坏，重新生成...");
+                    localKeystoreFile.delete();
+                    generateAndSaveKeystore(localKeystoreFile);
+                }
+            }
+
+            // 加载最终的 KeyStore
+            KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
             try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                 keyStore.load(fis, KEY_PASSWORD);
             }
             return keyStore;
+
         } catch (Exception e) {
-            log("加载生成的 Keystore 失败: " + e.getMessage());
+            log("加载或生成 Keystore 异常: " + e.getMessage());
             e.printStackTrace();
             return null;
         }
     }
 
     /**
-     * 使用 SpongyCastle 自动生成符合 apksig 规范的 KeyStore
+     * 核心：纯 Java 代码生成符合 apksig 规范的自签名 Keystore 文件
      */
     private boolean generateAndSaveKeystore(File keystoreFile) {
         try {
-            log("正在生成 2048 位 RSA 密钥对...");
+            log("1/3: 正在生成 2048 位 RSA 密钥对...");
             KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA");
             keyPairGen.initialize(2048);
             KeyPair keyPair = keyPairGen.generateKeyPair();
 
-            log("正在生成符合 apksig 规范的自签名 X.509 证书...");
+            log("2/3: 正在通过 BouncyCastle 生成符合 apksig 规范的自签名证书...");
             long now = System.currentTimeMillis();
             Date startDate = new Date(now - 86400000L * 7); // 7天前开始生效
-            Date endDate = new Date(now + 30L * 365L * 86400000L); // 30年有效期
+            Date endDate = new Date(now + 30L * 365L * 86400000L); // 有效期 30 年
             BigInteger serialNumber = BigInteger.valueOf(now);
 
             X500Name subjectAndIssuer = new X500Name("CN=Android Debug, O=Android, C=US");
@@ -274,33 +254,34 @@ public class ApkSignerUtil {
                     keyPair.getPublic()
             );
 
-            // 添加数字签名与密钥加密权限
+            // 必须添加 KeyUsage 权限扩展，否则 apksig 会拒绝签名
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment);
             certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
             ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256withRSA")
-                    .setProvider("SC")
+                    .setProvider("BC")
                     .build(keyPair.getPrivate());
 
             X509CertificateHolder certHolder = certBuilder.build(contentSigner);
             X509Certificate cert = new JcaX509CertificateConverter()
-                    .setProvider("SC")
+                    .setProvider("BC")
                     .getCertificate(certHolder);
 
-            // 创建 PKCS12 KeyStore，提供者指定为 "SC" (SpongyCastle)
-            KeyStore keyStore = KeyStore.getInstance("PKCS12", "SC");
+            log("3/3: 正在创建 PKCS12 格式的 Keystore 并持久化保存...");
+            KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
             keyStore.load(null, null);
             keyStore.setKeyEntry(KEY_ALIAS, keyPair.getPrivate(), KEY_PASSWORD, new java.security.cert.Certificate[]{cert});
 
-            // 保存文件
+            // 写入本地文件
             try (FileOutputStream fos = new FileOutputStream(keystoreFile)) {
                 keyStore.store(fos, KEY_PASSWORD);
             }
-            log("自动生成 Keystore 成功并已保存至: " + keystoreFile.getAbsolutePath());
+
+            log("Keystore 动态生成成功！保存路径: " + keystoreFile.getAbsolutePath());
             return true;
 
         } catch (Exception e) {
-            log("自动生成 Keystore 异常: " + e.getMessage());
+            log("动态生成 Keystore 失败: " + e.getMessage());
             e.printStackTrace();
             if (keystoreFile.exists()) {
                 keystoreFile.delete();
