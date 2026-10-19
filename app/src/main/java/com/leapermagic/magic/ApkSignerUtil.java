@@ -7,6 +7,13 @@ import android.util.Log;
 
 import com.android.apksig.ApkSigner;
 
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.cert.X509CertificateHolder;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.operator.ContentSigner;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
+
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -19,8 +26,6 @@ import java.security.PrivateKey;
 import java.security.cert.X509Certificate;
 import java.util.Collections;
 import java.util.Date;
-import java.util.List;
-import javax.security.auth.x500.X500Principal;
 
 public class ApkSignerUtil {
 
@@ -157,7 +162,7 @@ public class ApkSignerUtil {
     /**
      * 加载本地 Keystore：
      * 1. 如果本地文件不存在，先尝试从 assets 复制；
-     * 2. 如果 assets 也没有，则通过代码自动生成一个新的 Keystore 文件；
+     * 2. 如果 assets 也没有，则通过 BouncyCastle 自动生成一个新的 Keystore 文件；
      * 3. 后续所有签名均从该本地文件读取。
      */
     private KeyStore loadDebugKeyStore() {
@@ -181,7 +186,7 @@ public class ApkSignerUtil {
                     initialized = true;
                     log("已成功从 assets 复制 debug.keystore 到本地存储。");
                 } catch (Exception e) {
-                    log("assets 中未找到 debug.keystore，将通过代码自动生成...");
+                    log("assets 中未找到 debug.keystore，将通过 BouncyCastle 自动生成...");
                 }
 
                 // 如果 assets 也没有，自动生成
@@ -210,7 +215,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 当本地和 assets 均无 keystore 时，自动生成一个新的 keystore 文件
+     * 当本地和 assets 均无 keystore 时，使用 BouncyCastle 自动生成一个新的 keystore 文件
      */
     private boolean generateAndSaveKeystore(File keystoreFile) {
         try {
@@ -220,34 +225,28 @@ public class ApkSignerUtil {
             KeyPair keyPair = keyPairGen.generateKeyPair();
 
             log("正在生成自签名 X.509 证书 (有效期 30 年)...");
-            X509Certificate cert;
-            try {
-                // 使用 Android 内置的 BouncyCastle 动态生成自签名证书
-                Class<?> genClass = Class.forName("com.android.org.bouncycastle.x509.X509V3CertificateGenerator");
-                Object certGen = genClass.getDeclaredConstructor().newInstance();
+            long now = System.currentTimeMillis();
+            Date startDate = new Date(now - 86400000L); // 昨天
+            Date endDate = new Date(now + 30L * 365L * 86400000L); // 30年后
+            BigInteger serialNumber = BigInteger.valueOf(now);
 
-                genClass.getMethod("setSerialNumber", BigInteger.class)
-                        .invoke(certGen, BigInteger.valueOf(System.currentTimeMillis()));
-                
-                X500Principal issuer = new X500Principal("CN=Android Debug, O=Android, C=US");
-                genClass.getMethod("setIssuerDN", X500Principal.class).invoke(certGen, issuer);
-                genClass.getMethod("setNotBefore", Date.class).invoke(certGen, new Date(System.currentTimeMillis() - 86400000L));
-                genClass.getMethod("setNotAfter", Date.class).invoke(certGen, new Date(System.currentTimeMillis() + 30L * 365L * 86400000L));
-                genClass.getMethod("setSubjectDN", X500Principal.class).invoke(certGen, issuer);
-                genClass.getMethod("setPublicKey", java.security.PublicKey.class).invoke(certGen, keyPair.getPublic());
-                genClass.getMethod("setSignatureAlgorithm", String.class).invoke(certGen, "SHA256WithRSAEncryption");
+            X500Name issuer = new X500Name("CN=Android Debug, O=Android, C=US");
 
-                cert = (X509Certificate) genClass.getMethod("generate", PrivateKey.class)
-                        .invoke(certGen, keyPair.getPrivate());
-            } catch (Exception e) {
-                log("生成自签名证书错误: " + e.getMessage());
-                return false;
-            }
+            // 使用标准 BouncyCastle 构建自签名证书
+            JcaX509v3CertificateBuilder certBuilder = new JcaX509v3CertificateBuilder(
+                    issuer,
+                    serialNumber,
+                    startDate,
+                    endDate,
+                    issuer,
+                    keyPair.getPublic()
+            );
 
-            if (cert == null) {
-                log("错误: 生成的自签名证书为空");
-                return false;
-            }
+            ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256WithRSAEncryption")
+                    .build(keyPair.getPrivate());
+
+            X509CertificateHolder certHolder = certBuilder.build(contentSigner);
+            X509Certificate cert = new JcaX509CertificateConverter().getCertificate(certHolder);
 
             // 创建 PKCS12 类型的 Keystore
             KeyStore keyStore = KeyStore.getInstance("PKCS12");
