@@ -38,7 +38,6 @@ public class ApkSignerUtil {
     private static final String KEY_ALIAS = "androiddebugkey";
     private static final char[] KEY_PASSWORD = "android".toCharArray();
 
-    // 【关键修复1】强制注册 BouncyCastle 为第一优先级 Provider，解决 Conscrypt 签名块编码失败问题
     static {
         try {
             Security.removeProvider("BC");
@@ -180,8 +179,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 加载本地 Keystore：
-     * 【关键修复2】检测并清除上一次失败残留的坏证书文件
+     * 加载本地 Keystore
      */
     private KeyStore loadDebugKeyStore() {
         File localKeystoreFile = new File(context.getFilesDir(), KEYSTORE_NAME);
@@ -190,7 +188,7 @@ public class ApkSignerUtil {
         if (localKeystoreFile.exists()) {
             try {
                 log("检测到本地已存在 Keystore，正在校验有效性: " + localKeystoreFile.getAbsolutePath());
-                KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
+                KeyStore keyStore = KeyStore.getInstance("PKCS12");
                 try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                     keyStore.load(fis, KEY_PASSWORD);
                 }
@@ -236,7 +234,7 @@ public class ApkSignerUtil {
 
         // 加载最新生成的 KeyStore
         try {
-            KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
+            KeyStore keyStore = KeyStore.getInstance("PKCS12");
             try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                 keyStore.load(fis, KEY_PASSWORD);
             }
@@ -249,12 +247,13 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 使用 BouncyCastle 自动生成标准符合 apksig 规范的 KeyStore
+     * 自动生成符合 apksig 规范的 KeyStore
      */
     private boolean generateAndSaveKeystore(File keystoreFile) {
         try {
             log("正在生成 2048 位 RSA 密钥对...");
-            KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA", "BC");
+            // 使用系统默认 RSA 生成器，避免 provider 找不到算法的报错
+            KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA");
             keyPairGen.initialize(2048);
             KeyPair keyPair = keyPairGen.generateKeyPair();
 
@@ -275,7 +274,7 @@ public class ApkSignerUtil {
                     keyPair.getPublic()
             );
 
-            // 必须添加数字签名与密钥加密权限 (digitalSignature | keyEncipherment)
+            // 添加数字签名与密钥加密权限
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment);
             certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
@@ -289,7 +288,7 @@ public class ApkSignerUtil {
                     .getCertificate(certHolder);
 
             // 创建 PKCS12 KeyStore
-            KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
+            KeyStore keyStore = KeyStore.getInstance("PKCS12");
             keyStore.load(null, null);
             keyStore.setKeyEntry(KEY_ALIAS, keyPair.getPrivate(), KEY_PASSWORD, new java.security.cert.Certificate[]{cert});
 
