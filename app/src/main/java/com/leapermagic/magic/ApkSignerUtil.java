@@ -188,7 +188,7 @@ public class ApkSignerUtil {
         if (localKeystoreFile.exists()) {
             try {
                 log("检测到本地已存在 Keystore，正在校验有效性: " + localKeystoreFile.getAbsolutePath());
-                KeyStore keyStore = KeyStore.getInstance("PKCS12");
+                KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
                 try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                     keyStore.load(fis, KEY_PASSWORD);
                 }
@@ -234,7 +234,7 @@ public class ApkSignerUtil {
 
         // 加载最新生成的 KeyStore
         try {
-            KeyStore keyStore = KeyStore.getInstance("PKCS12");
+            KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
             try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                 keyStore.load(fis, KEY_PASSWORD);
             }
@@ -252,7 +252,6 @@ public class ApkSignerUtil {
     private boolean generateAndSaveKeystore(File keystoreFile) {
         try {
             log("正在生成 2048 位 RSA 密钥对...");
-            // 使用系统默认 RSA 生成器，避免 provider 找不到算法的报错
             KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA");
             keyPairGen.initialize(2048);
             KeyPair keyPair = keyPairGen.generateKeyPair();
@@ -278,7 +277,8 @@ public class ApkSignerUtil {
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment);
             certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
-            ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256WithRSA")
+            // 【关键修复】将签名算法名称调整为标准的 "SHA256withRSA"（大小写敏感）
+            ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256withRSA")
                     .setProvider("BC")
                     .build(keyPair.getPrivate());
 
@@ -288,7 +288,7 @@ public class ApkSignerUtil {
                     .getCertificate(certHolder);
 
             // 创建 PKCS12 KeyStore
-            KeyStore keyStore = KeyStore.getInstance("PKCS12");
+            KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
             keyStore.load(null, null);
             keyStore.setKeyEntry(KEY_ALIAS, keyPair.getPrivate(), KEY_PASSWORD, new java.security.cert.Certificate[]{cert});
 
