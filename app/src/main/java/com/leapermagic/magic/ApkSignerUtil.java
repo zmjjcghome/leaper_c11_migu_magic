@@ -146,17 +146,24 @@ public class ApkSignerUtil {
         }
     }
 
-    /**
-     * 获取或创建密钥库（不显式绑定 Provider，由系统自动选择默认的 PKCS12 实现，彻底解决 not found 报错）
+        /**
+     * 获取或创建密钥库：使用 BKS-v1 并显式绑定 BC_PROVIDER，彻底规避平台找不到 KeyStore 的问题
      */
     private synchronized KeyStore getOrCreateKeyStore() throws Exception {
         File ksFile = new File(context.getFilesDir(), KEYSTORE_FILENAME);
         KeyStore keyStore;
+        
         try {
-            keyStore = KeyStore.getInstance("PKCS12");
+            // 明确使用 BouncyCastle 提供的 BKS-v1 格式和 BC_PROVIDER
+            keyStore = KeyStore.getInstance("BKS-v1", BC_PROVIDER);
         } catch (Exception e) {
-            // 降级使用默认类型
-            keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+            log("使用 BKS-v1 失败，尝试标准 BKS: " + e.getMessage());
+            try {
+                keyStore = KeyStore.getInstance("BKS", BC_PROVIDER);
+            } catch (Exception e2) {
+                log("使用 BC Provider 的 BKS 失败，使用系统默认: " + e2.getMessage());
+                keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+            }
         }
 
         if (ksFile.exists()) {
@@ -183,6 +190,7 @@ public class ApkSignerUtil {
         
         return keyStore;
     }
+
 
     /**
      * 生成新 RSA 密钥对并保存（显式指定使用 BC_PROVIDER）
