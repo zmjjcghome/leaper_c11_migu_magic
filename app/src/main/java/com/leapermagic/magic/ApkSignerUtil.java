@@ -119,18 +119,17 @@ public class ApkSignerUtil {
                 return false;
             }
 
-            log("密钥加载成功，正在配置 ApkSigner (启用 V1, V2, V3 签名)...");
+            log("密钥加载成功，正在配置 ApkSigner (apksig 8.2.2 兼容版)...");
 
-            ApkSigner.SignerParams signerParams = new ApkSigner.SignerParams();
-            signerParams.setName("CERT");
-            signerParams.setPrivateKey(privateKey);
-            signerParams.setCertificates(Collections.singletonList(cert));
-
-            List<ApkSigner.SignerParams> signers = Collections.singletonList(signerParams);
+            // 适配 apksig 8.2.2 的构建方式
+            ApkSigner.SignerConfig signerConfig = new ApkSigner.SignerConfig.Builder(
+                    "CERT", privateKey, Collections.singletonList(cert)
+            ).build();
 
             // 配置 ApkSigner 构建器：同时开启 V1、V2、V3 签名
-            ApkSigner.Builder builder = new ApkSigner.Builder(signers, outputFile)
+            ApkSigner.Builder builder = new ApkSigner.Builder(Collections.singletonList(signerConfig))
                     .setInputApk(inputTempFile)
+                    .setOutputApk(outputFile)
                     .setV1SigningEnabled(true) // V1 签名
                     .setV2SigningEnabled(true) // V2 签名
                     .setV3SigningEnabled(true); // V3 签名 (Android 9+)
