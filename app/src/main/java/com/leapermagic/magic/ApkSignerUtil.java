@@ -255,7 +255,7 @@ public class ApkSignerUtil {
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature);
             certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
-(`ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256WithRSAEncryption")`
+            ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256WithRSAEncryption")
                     .build(keyPair.getPrivate());
 
             X509CertificateHolder certHolder = certBuilder.build(contentSigner);
