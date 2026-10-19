@@ -11,8 +11,6 @@ import android.util.Log;
 import com.android.apksig.ApkSigner;
 import com.android.apksig.ApkVerifier;
 
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
-
 import java.io.*;
 import java.security.*;
 import java.security.cert.CertificateFactory;
@@ -41,16 +39,8 @@ public class ApkSignerUtil {
 
     private SignLogCallback logCallback;
 
-    static {
-        // 确保 BC Provider 优先注册并命名为 "BC"
-        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-            Security.insertProviderAt(new BouncyCastleProvider(), 1);
-        }
-    }
-
     public ApkSignerUtil(Context context) {
         this.context = context.getApplicationContext();
-        ensureProvider();
     }
 
     public ApkSignerUtil(Context context, SignLogCallback callback) {
@@ -67,12 +57,6 @@ public class ApkSignerUtil {
         if (logCallback != null) logCallback.onLog(msg);
     }
 
-    private static void ensureProvider() {
-        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-            Security.insertProviderAt(new BouncyCastleProvider(), 1);
-        }
-    }
-
     /**
      * 核心重签名方法
      */
@@ -80,8 +64,6 @@ public class ApkSignerUtil {
         log("========== 签名开始 ==========");
         File inputApk = null;
         try {
-            ensureProvider();
-            
             KeyPair keyPair = getOrCreateKeyPair();
             X509Certificate cert = getOrCreateCertificate(keyPair);
             
@@ -147,7 +129,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 获取或生成 RSA 密钥对（显式指定使用字符串 "BC" 提供者）
+     * 获取或生成 RSA 密钥对（使用系统默认 RSA 提供者，绝对兼容）
      */
     private KeyPair getOrCreateKeyPair() throws Exception {
         File keyFile = new File(context.getFilesDir(), PRIVATE_KEY_FILE);
@@ -155,7 +137,7 @@ public class ApkSignerUtil {
         if (keyFile.exists()) {
             try {
                 byte[] keyBytes = readFileToBytes(keyFile);
-                KeyFactory keyFactory = KeyFactory.getInstance("RSA", BouncyCastleProvider.PROVIDER_NAME);
+                KeyFactory keyFactory = KeyFactory.getInstance("RSA");
                 PrivateKey privateKey = keyFactory.generatePrivate(new PKCS8EncodedKeySpec(keyBytes));
                 
                 File certFile = new File(context.getFilesDir(), CERT_FILE);
@@ -174,7 +156,7 @@ public class ApkSignerUtil {
         }
 
         log("生成新的 RSA 密钥对");
-        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA", BouncyCastleProvider.PROVIDER_NAME);
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
         kpg.initialize(KEY_SIZE);
         KeyPair kp = kpg.generateKeyPair();
 
@@ -192,7 +174,7 @@ public class ApkSignerUtil {
         File certFile = new File(context.getFilesDir(), CERT_FILE);
         if (certFile.exists()) {
             try (FileInputStream fis = new FileInputStream(certFile)) {
-                CertificateFactory cf = CertificateFactory.getInstance("X.509", BouncyCastleProvider.PROVIDER_NAME);
+                CertificateFactory cf = CertificateFactory.getInstance("X.509");
                 return (X509Certificate) cf.generateCertificate(fis);
             } catch (Exception e) {
                 certFile.delete();
@@ -209,7 +191,7 @@ public class ApkSignerUtil {
 
     private PublicKey getCertificatePublicKey(File certFile) {
         try (FileInputStream fis = new FileInputStream(certFile)) {
-            CertificateFactory cf = CertificateFactory.getInstance("X.509", BouncyCastleProvider.PROVIDER_NAME);
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
             X509Certificate cert = (X509Certificate) cf.generateCertificate(fis);
             return cert.getPublicKey();
         } catch (Exception e) {
@@ -229,13 +211,13 @@ public class ApkSignerUtil {
                         org.bouncycastle.asn1.x509.SubjectPublicKeyInfo.getInstance(kp.getPublic().getEncoded())
                 );
         
+        // 使用系统默认签名器（不强制指定 provider），完美支持 SHA256withRSA
         org.bouncycastle.operator.ContentSigner signer = new org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withRSA")
-                .setProvider(BouncyCastleProvider.PROVIDER_NAME)
                 .build(kp.getPrivate());
         
         org.bouncycastle.cert.X509CertificateHolder certHolder = certBuilder.build(signer);
         
-        CertificateFactory cf = CertificateFactory.getInstance("X.509", BouncyCastleProvider.PROVIDER_NAME);
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
         return (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certHolder.getEncoded()));
     }
 
