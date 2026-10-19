@@ -27,8 +27,8 @@ public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
     
-    // 密钥库配置（改为标准的 PKCS12 格式）
-    private static final String KEYSTORE_FILENAME = "autosign.p12";
+    // 密钥库配置（改回标准的 BKS 格式，配合 BC Provider 使用最稳定）
+    private static final String KEYSTORE_FILENAME = "autosign.bks";
     private static final String KEYSTORE_PASSWORD = "changeit";
     private static final String KEY_ALIAS = "autosign_alias";
     private static final String KEY_PASSWORD = "changeit";
@@ -47,7 +47,7 @@ public class ApkSignerUtil {
     private static final BouncyCastleProvider BC_PROVIDER = new BouncyCastleProvider();
 
     static {
-        // 关键修复 1：移除旧 BC 并插入到第 1 位置，让 JCA 签名优先使用 BC，防止 Conscrypt 密钥类型冲突
+        // 移除旧 BC 并插入到第 1 位置，让 JCA 签名优先使用 BC，防止 Conscrypt 密钥类型冲突
         Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME);
         Security.insertProviderAt(BC_PROVIDER, 1);
     }
@@ -118,14 +118,14 @@ public class ApkSignerUtil {
                     x509CertList
             ).build();
 
-            // 4. 关键修复 2：构建签名器并显式指定 minSdkVersion 避免 Manifest 解析异常
+            // 4. 构建签名器并显式指定 minSdkVersion 避免 Manifest 解析异常
             ApkSigner apkSigner = new ApkSigner.Builder(Collections.singletonList(signerConfig))
                     .setInputApk(inputApk)
                     .setOutputApk(outputFile)
                     .setV1SigningEnabled(true)
                     .setV2SigningEnabled(true)
                     .setV3SigningEnabled(true)
-                    .setMinSdkVersion(24) // 兼容 Android 7.0+ 并且避免 apksig 解析二进制 Manifest 出错
+                    .setMinSdkVersion(24) 
                     .build();
 
             // 5. 执行签名
@@ -155,11 +155,11 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 获取或创建标准 PKCS12 密钥库
+     * 获取或创建 BKS 密钥库（指定使用 BC_PROVIDER）
      */
     private synchronized KeyStore getOrCreateKeyStore() throws Exception {
         File ksFile = new File(context.getFilesDir(), KEYSTORE_FILENAME);
-        KeyStore keyStore = KeyStore.getInstance("PKCS12", BC_PROVIDER);
+        KeyStore keyStore = KeyStore.getInstance("BKS", BC_PROVIDER);
 
         if (ksFile.exists()) {
             try (FileInputStream fis = new FileInputStream(ksFile)) {
@@ -178,7 +178,7 @@ public class ApkSignerUtil {
                 log("加载现有密钥库成功");
             }
         } else {
-            log("创建新的 PKCS12 密钥库");
+            log("创建新的 BKS 密钥库");
             keyStore.load(null, null);
             generateNewKey(keyStore, ksFile);
         }
@@ -224,7 +224,6 @@ public class ApkSignerUtil {
                         org.bouncycastle.asn1.x509.SubjectPublicKeyInfo.getInstance(kp.getPublic().getEncoded())
                 );
         
-        // 关键修复 3：设置 .setProvider(BC_PROVIDER) 显式使用 BC 生成 ContentSigner
         org.bouncycastle.operator.ContentSigner signer = new org.bouncycastle.operator.jcajce.JcaContentSignerBuilder("SHA256withRSA")
                 .setProvider(BC_PROVIDER)
                 .build(kp.getPrivate());
