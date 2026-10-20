@@ -24,25 +24,20 @@ import java.util.List;
 public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
-    
-    // 密钥库配置（与 keytool 生成的参数完全一致）
+
+    // 密钥库配置
     private static final String KEYSTORE_FILENAME = "autosign.p12";
     private static final String KEYSTORE_PASSWORD = "changeit";
     private static final String KEY_ALIAS = "autosign_alias";
 
     private final Context context;
-
-    public interface SignLogCallback {
-        void onLog(String message);
-    }
-
     private SignLogCallback logCallback;
-    
-    // 提前持有BC Provider的单例，避免重复注册
+
+    // 【核心修复 1】：提前持有 BC Provider，用于 apksig 底层加密算法
     private static final BouncyCastleProvider BC_PROVIDER = new BouncyCastleProvider();
 
     static {
-        // apksig 编码 V2/V3 签名块强依赖 BouncyCastle Provider
+        // 注册 BC Provider，apksig 的 V2/V3 签名强依赖它
         Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME);
         Security.addProvider(BC_PROVIDER);
     }
@@ -66,22 +61,22 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 核心重签名方法，支持V1+V2+V3全版本签名
+     * 核心重签名方法，支持 V1+V2+V3 全版本签名
      */
     public boolean resignApk(ContentResolver contentResolver, Uri apkUri, File outputFile) {
         log("========== 签名开始 ==========");
         try {
-            // 1. 确保 p12 密钥库已就绪（从 assets 释放到 filesDir）
+            // 1. 确保 p12 密钥库已就绪
             if (!ensureKeystoreExtracted()) {
                 log("❌ 无法获取有效的签名密钥库");
                 return false;
             }
 
             File p12File = new File(context.getFilesDir(), KEYSTORE_FILENAME);
-            // 明确指定使用 BC Provider 加载 PKCS12，确保完美兼容
-            // 【修复】：不要指定 "PKCS12"，直接使用默认类型，Android 会根据文件内容自动识别
-            KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
 
+            // 【核心修复 2】：使用 Android 系统默认 Provider 加载 PKCS12
+            // 绝对不要写 KeyStore.getInstance("PKCS12", BC_PROVIDER)，Android 会报 not found
+            KeyStore keyStore = KeyStore.getInstance("PKCS12");
             try (FileInputStream fis = new FileInputStream(p12File)) {
                 keyStore.load(fis, KEYSTORE_PASSWORD.toCharArray());
             }
@@ -110,21 +105,21 @@ public class ApkSignerUtil {
             }
             log("输入文件大小: " + inputApk.length() + " bytes");
 
+            // 3. 构建签名配置
             List<X509Certificate> x509CertList = new ArrayList<>();
             for (Certificate c : certChain) {
                 if (c instanceof X509Certificate) {
                     x509CertList.add((X509Certificate) c);
                 }
             }
-            
-            // 构建签名配置
+
             ApkSigner.SignerConfig signerConfig = new ApkSigner.SignerConfig.Builder(
-                    "AutoSign", 
-                    privateKey, 
+                    "AutoSign",
+                    privateKey,
                     x509CertList
             ).build();
 
-            // 3. 启用V1+V2+V3全签名方案
+            // 4. 启用 V1+V2+V3 全签名方案并执行
             ApkSigner apkSigner = new ApkSigner.Builder(Collections.singletonList(signerConfig))
                     .setInputApk(inputApk)
                     .setOutputApk(outputFile)
@@ -133,7 +128,6 @@ public class ApkSignerUtil {
                     .setV3SigningEnabled(true)
                     .build();
 
-            // 4. 执行签名
             apkSigner.sign();
             log("ApkSigner.sign() 执行完成");
 
@@ -148,7 +142,6 @@ public class ApkSignerUtil {
 
             // 清理临时文件
             if (inputApk.exists()) inputApk.delete();
-            
             return success;
 
         } catch (Exception e) {
@@ -162,14 +155,11 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 检查并从 assets 中提取 keytool 生成的 p12 密钥库到 filesDir
+     * 检查并从 assets 中提取 p12 密钥库到 filesDir
      */
     private synchronized boolean ensureKeystoreExtracted() {
         File p12File = new File(context.getFilesDir(), KEYSTORE_FILENAME);
-
-        if (p12File.exists()) {
-            return true;
-        }
+        if (p12File.exists()) return true;
 
         log("本地密钥库不存在，正在从 assets 释放...");
         try (InputStream in = context.getAssets().open(KEYSTORE_FILENAME);
@@ -189,7 +179,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 验证APK签名有效性
+     * 验证 APK 签名有效性
      */
     private void verifyApkSignature(File apkFile) {
         try {
@@ -208,12 +198,12 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 从Uri复制APK到临时文件
+     * 从 Uri 复制 APK 到临时文件
      */
     private File copyUriToTempFile(ContentResolver cr, Uri uri) throws IOException {
         InputStream is = cr.openInputStream(uri);
         if (is == null) return null;
-        
+
         File tempFile = File.createTempFile("apk_input_", ".apk", context.getCacheDir());
         try (FileOutputStream fos = new FileOutputStream(tempFile)) {
             byte[] buffer = new byte[8192];
@@ -226,20 +216,19 @@ public class ApkSignerUtil {
         }
         return tempFile;
     }
-    
+
     public static File generateOutputFile(Context context, Uri uri) {
         if (uri == null) return null;
-
         String name = getFileName(context, uri);
         if (name == null) name = "unknown.apk";
-        
+
         File outputDir;
         if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
             outputDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "SignedApk");
         } else {
             outputDir = new File(context.getFilesDir(), "SignedApk");
         }
-        
+
         if (!outputDir.exists()) outputDir.mkdirs();
         return new File(outputDir, insertResigned(name));
     }
@@ -257,20 +246,19 @@ public class ApkSignerUtil {
         if (name == null && uri.getPath() != null) {
             String path = uri.getPath();
             int lastSlash = path.lastIndexOf('/');
-            if (lastSlash != -1) {
-                name = path.substring(lastSlash + 1);
-            } else {
-                name = path;
-            }
+            if (lastSlash != -1) name = path.substring(lastSlash + 1);
+            else name = path;
         }
         return (name != null && !name.isEmpty()) ? name : "unsigned.apk";
     }
 
     private static String insertResigned(String name) {
         int dot = name.lastIndexOf('.');
-        if (dot > 0) {
-            return name.substring(0, dot) + "_resigned" + name.substring(dot);
-        }
+        if (dot > 0) return name.substring(0, dot) + "_resigned" + name.substring(dot);
         return name + "_resigned.apk";
+    }
+
+    public interface SignLogCallback {
+        void onLog(String message);
     }
 }
