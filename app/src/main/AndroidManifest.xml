@@ -41,6 +41,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:requestLegacyExternalStorage="true"
+        android:extractNativeLibs="true"  <!-- 必须加上这一行，强制系统解压 .so 文件到本地 -->
         android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
 
         <activity
