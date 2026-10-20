@@ -145,7 +145,7 @@ public class ApkSignerUtil {
                     .setOutputApk(outputFile)
                     .setV1SigningEnabled(true)  // V1 签名
                     .setV2SigningEnabled(true)  // V2 签名
-                    .setV3SigningEnabled(true)  // V3 签名 (Android 9+)
+                    .setV3SigningEnabled(false)  // V3 签名 (Android 9+)
                     .setMinSdkVersion(28);     // 【关键修复】显式指定最小支持版本，防止 V3 签名块解析清单失败
 
             log("开始执行多版本 (V1/V2/V3) 签名算法...");
