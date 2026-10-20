@@ -11,6 +11,8 @@ import android.provider.OpenableColumns;
 import com.android.apksig.ApkSigner;
 import com.android.apksig.ApkVerifier;
 
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+
 import java.io.*;
 import java.security.*;
 import java.security.cert.Certificate;
@@ -35,6 +37,15 @@ public class ApkSignerUtil {
     }
 
     private SignLogCallback logCallback;
+    
+    // 提前持有BC Provider的单例，避免重复注册
+    private static final BouncyCastleProvider BC_PROVIDER = new BouncyCastleProvider();
+
+    static {
+        // apksig 编码 V2/V3 签名块强依赖 BouncyCastle Provider
+        Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME);
+        Security.addProvider(BC_PROVIDER);
+    }
 
     public ApkSignerUtil(Context context) {
         this.context = context.getApplicationContext();
@@ -67,7 +78,8 @@ public class ApkSignerUtil {
             }
 
             File p12File = new File(context.getFilesDir(), KEYSTORE_FILENAME);
-            KeyStore keyStore = KeyStore.getInstance("PKCS12");
+            // 明确指定使用 BC Provider 加载 PKCS12，确保完美兼容
+            KeyStore keyStore = KeyStore.getInstance("PKCS12", BC_PROVIDER);
             try (FileInputStream fis = new FileInputStream(p12File)) {
                 keyStore.load(fis, KEYSTORE_PASSWORD.toCharArray());
             }
@@ -145,7 +157,6 @@ public class ApkSignerUtil {
             Log.e(TAG, "签名详细错误", e);
             return false;
         }
-
     }
 
     /**
