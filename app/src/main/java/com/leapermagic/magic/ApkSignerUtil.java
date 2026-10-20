@@ -38,7 +38,6 @@ public class ApkSignerUtil {
     private static final String KEY_ALIAS = "androiddebugkey";
     private static final char[] KEY_PASSWORD = "android".toCharArray();
 
-    // 动态注册 BouncyCastle 提供者
     static {
         try {
             Security.removeProvider("BC");
@@ -197,7 +196,7 @@ public class ApkSignerUtil {
             } else {
                 log("检测到本地已存在 Keystore，正在校验: " + localKeystoreFile.getAbsolutePath());
                 try {
-                    KeyStore testStore = KeyStore.getInstance("PKCS12", "BC");
+                    KeyStore testStore = KeyStore.getInstance("PKCS12", new BouncyCastleProvider());
                     try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                         testStore.load(fis, KEY_PASSWORD);
                     }
@@ -213,8 +212,8 @@ public class ApkSignerUtil {
                 }
             }
 
-            // 加载最终的 KeyStore
-            KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
+            // 加载最终的 KeyStore（直接传入 Provider 实例）
+            KeyStore keyStore = KeyStore.getInstance("PKCS12", new BouncyCastleProvider());
             try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                 keyStore.load(fis, KEY_PASSWORD);
             }
@@ -258,17 +257,20 @@ public class ApkSignerUtil {
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment);
             certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
-            ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256WithRSAEncryption")
-                    .setProvider("BC")
+            // 【关键修复】直接传入 BouncyCastleProvider 对象实例，彻底避免字符串查找失败
+            BouncyCastleProvider bcProvider = new BouncyCastleProvider();
+
+            ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256withRSA")
+                    .setProvider(bcProvider)
                     .build(keyPair.getPrivate());
 
             X509CertificateHolder certHolder = certBuilder.build(contentSigner);
             X509Certificate cert = new JcaX509CertificateConverter()
-                    .setProvider("BC")
+                    .setProvider(bcProvider)
                     .getCertificate(certHolder);
 
             log("3/3: 正在创建 PKCS12 格式的 Keystore 并持久化保存...");
-            KeyStore keyStore = KeyStore.getInstance("PKCS12", "BC");
+            KeyStore keyStore = KeyStore.getInstance("PKCS12", bcProvider);
             keyStore.load(null, null);
             keyStore.setKeyEntry(KEY_ALIAS, keyPair.getPrivate(), KEY_PASSWORD, new java.security.cert.Certificate[]{cert});
 
