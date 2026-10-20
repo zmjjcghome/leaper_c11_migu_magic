@@ -212,7 +212,7 @@ public class ApkSignerUtil {
                 }
             }
 
-            // 加载最终的 KeyStore（直接传入 Provider 实例）
+            // 加载最终的 KeyStore
             KeyStore keyStore = KeyStore.getInstance("PKCS12", new BouncyCastleProvider());
             try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                 keyStore.load(fis, KEY_PASSWORD);
@@ -257,10 +257,10 @@ public class ApkSignerUtil {
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment);
             certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
-            // 【关键修复】直接传入 BouncyCastleProvider 对象实例，彻底避免字符串查找失败
             BouncyCastleProvider bcProvider = new BouncyCastleProvider();
 
-            ContentSigner contentSigner = new JcaContentSignerBuilder("SHA256withRSA")
+            // 【关键修复】使用标准的 OID 数字标识 ("1.2.840.113549.1.1.11") 代替算法名称字符串，彻底杜绝字符串解析失败
+            ContentSigner contentSigner = new JcaContentSignerBuilder("1.2.840.113549.1.1.11")
                     .setProvider(bcProvider)
                     .build(keyPair.getPrivate());
 
