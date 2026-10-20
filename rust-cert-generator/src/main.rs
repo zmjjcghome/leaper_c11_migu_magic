@@ -1,5 +1,5 @@
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, KeyUsagePurpose, ExtendedKeyUsagePurpose};
-use p12-keystore::{KeyStore, KeyStoreEntry, PrivateKeyChain};
+use p12_keystore::{KeyStore, KeyStoreEntry, PrivateKeyChain};
 use time::{OffsetDateTime, Duration};
 use std::env;
 use std::fs;
