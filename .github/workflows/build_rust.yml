@@ -1,0 +1,51 @@
+name: Build Rust Cert Generator
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'rust-cert-generator/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Android targets
+        run: |
+          rustup target add armv7-linux-androideabi aarch64-linux-android x86_64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Build for Android ABIs
+        working-directory: rust-cert-generator
+        run: |
+          cargo ndk -t armeabi-v7a -t arm64-v8a -t x86_64 --min-sdk-version 21 build --release
+
+      - name: Copy binaries to Android Assets
+        run: |
+          mkdir -p app/src/main/assets/bin/armeabi-v7a
+          mkdir -p app/src/main/assets/bin/arm64-v8a
+          mkdir -p app/src/main/assets/bin/x86_64
+
+          cp rust-cert-generator/target/armv7-linux-androideabi/release/cert_generator app/src/main/assets/bin/armeabi-v7a/
+          cp rust-cert-generator/target/aarch64-linux-android/release/cert_generator app/src/main/assets/bin/arm64-v8a/
+          cp rust-cert-generator/target/x86_64-linux-android/release/cert_generator app/src/main/assets/bin/x86_64/
+
+          chmod +x app/src/main/assets/bin/armeabi-v7a/cert_generator
+          chmod +x app/src/main/assets/bin/arm64-v8a/cert_generator
+          chmod +x app/src/main/assets/bin/x86_64/cert_generator
+
+      - name: Commit and push compiled assets back to repo
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Auto-update compiled Rust binaries in assets"
+          file_pattern: "app/src/main/assets/bin/"
