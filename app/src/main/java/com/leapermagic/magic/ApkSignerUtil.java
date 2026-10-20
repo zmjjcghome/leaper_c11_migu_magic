@@ -3,7 +3,6 @@ package com.leapermagic.magic;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.net.Uri;
-import android.os.Build;
 import android.util.Log;
 import android.database.Cursor;
 import android.os.Environment;
@@ -14,9 +13,8 @@ import com.android.apksig.ApkVerifier;
 
 import java.io.*;
 import java.security.*;
-import java.security.cert.CertificateFactory;
+import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
-import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -25,6 +23,11 @@ public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
     
+    // 与 Rust 生成的 P12 保持一致的配置
+    private static final String KEYSTORE_FILENAME = "android_release.p12";
+    private static final String KEYSTORE_PASSWORD = "android_keystore_password";
+    private static final String KEY_ALIAS = "my-key-alias";
+
     private final Context context;
 
     public interface SignLogCallback {
@@ -57,18 +60,27 @@ public class ApkSignerUtil {
     public boolean resignApk(ContentResolver contentResolver, Uri apkUri, File outputFile) {
         log("========== 签名开始 ==========");
         try {
-            // 1. 确保通过 Rust 成功生成或加载私钥与证书
+            // 1. 确保通过 Rust 成功生成或加载 p12 密钥库
             if (!ensureCertificateGenerated()) {
                 log("❌ 无法获取有效的签名证书和私钥");
                 return false;
             }
 
-            File keyFile = new File(context.getFilesDir(), "private_key.der");
-            File certFile = new File(context.getFilesDir(), "cert.der");
+            File p12File = new File(context.getFilesDir(), KEYSTORE_FILENAME);
+            KeyStore keyStore = KeyStore.getInstance("PKCS12");
+            try (FileInputStream fis = new FileInputStream(p12File)) {
+                keyStore.load(fis, KEYSTORE_PASSWORD.toCharArray());
+            }
 
-            PrivateKey privateKey = loadPrivateKey(keyFile);
-            X509Certificate cert = loadCertificate(certFile);
+            PrivateKey privateKey = (PrivateKey) keyStore.getKey(KEY_ALIAS, KEYSTORE_PASSWORD.toCharArray());
+            Certificate[] certChain = keyStore.getCertificateChain(KEY_ALIAS);
 
+            if (privateKey == null || certChain == null || certChain.length == 0) {
+                throw new IllegalStateException("无法从密钥库加载密钥或证书");
+            }
+
+            X509Certificate cert = (X509Certificate) certChain[0];
+            log("使用密钥别名: " + KEY_ALIAS);
             log("证书主体: " + cert.getSubjectDN());
 
             // 2. 准备输出目录与临时输入文件
@@ -85,7 +97,11 @@ public class ApkSignerUtil {
             log("输入文件大小: " + inputApk.length() + " bytes");
 
             List<X509Certificate> x509CertList = new ArrayList<>();
-            x509CertList.add(cert);
+            for (Certificate c : certChain) {
+                if (c instanceof X509Certificate) {
+                    x509CertList.add((X509Certificate) c);
+                }
+            }
             
             // 构建签名配置
             ApkSigner.SignerConfig signerConfig = new ApkSigner.SignerConfig.Builder(
@@ -116,7 +132,7 @@ public class ApkSignerUtil {
                 log("❌ 签名失败：输出文件为空或不存在");
             }
 
-            // 清理临时输入文件
+            // 清理临时文件
             if (inputApk.exists()) inputApk.delete();
             
             return success;
@@ -129,46 +145,30 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 检查或调用 Rust 可执行程序生成证书与私钥
+     * 检查或调用 Rust 可执行程序生成 p12 证书库
      */
     private synchronized boolean ensureCertificateGenerated() {
-        File keyFile = new File(context.getFilesDir(), "private_key.der");
-        File certFile = new File(context.getFilesDir(), "cert.der");
+        File p12File = new File(context.getFilesDir(), KEYSTORE_FILENAME);
 
-        if (keyFile.exists() && certFile.exists()) {
+        if (p12File.exists()) {
             return true;
         }
 
         log("本地证书不存在，正在调用 Rust 生成器...");
         try {
-            String abi = getPrimaryAbi();
-            log("当前设备架构 ABI: " + abi);
-
-            String assetPath = "bin/" + abi + "/cert_generator";
-            File execFile = new File(context.getFilesDir(), "cert_generator");
-
-            // 从 assets 中复制对应的可执行文件到 cache 目录
-            try (InputStream in = context.getAssets().open(assetPath);
-                 OutputStream out = new FileOutputStream(execFile)) {
-                byte[] buffer = new byte[8192];
-                int read;
-                while ((read = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, read);
-                }
+            // jniLibs 中的二进制文件会被系统自动解压到 nativeLibraryDir
+            File execFile = new File(context.getApplicationInfo().nativeLibraryDir, "libcert_generator.so");
+            
+            if (!execFile.exists()) {
+                log("❌ 找不到 Rust 可执行程序: " + execFile.getAbsolutePath());
+                return false;
             }
 
-            // 赋予执行权限
-            if (!execFile.setExecutable(true, false)) {
-                log("⚠️ 警告：赋予可执行权限失败");
-            }
-
-            // 执行 Rust 二进制程序，输出路径指定为 context.getFilesDir()
             String outputDir = context.getFilesDir().getAbsolutePath();
             ProcessBuilder pb = new ProcessBuilder(execFile.getAbsolutePath(), outputDir);
             pb.redirectErrorStream(true);
             Process process = pb.start();
 
-            // 读取 Rust 执行日志
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
@@ -177,54 +177,13 @@ public class ApkSignerUtil {
             }
 
             int exitCode = process.waitFor();
-            execFile.delete(); // 清理临时可执行文件
+            log("Rust 进程退出码: " + exitCode);
 
-            return exitCode == 0 && keyFile.exists() && certFile.exists();
+            return exitCode == 0 && p12File.exists();
         } catch (Exception e) {
             log("❌ 执行 Rust 证书生成器失败: " + e.getMessage());
             Log.e(TAG, "Rust exec error", e);
             return false;
-        }
-    }
-
-    private String getPrimaryAbi() {
-        String[] abis = Build.SUPPORTED_ABIS;
-        if (abis == null || abis.length == 0) {
-            return "armeabi-v7a";
-        }
-        String abi = abis[0].toLowerCase();
-        if (abi.contains("arm64") || abi.contains("aarch64")) {
-            return "arm64-v8a";
-        } else if (abi.contains("x86_64")) {
-            return "x86_64";
-        } else {
-            return "armeabi-v7a";
-        }
-    }
-
-    private PrivateKey loadPrivateKey(File keyFile) throws Exception {
-        byte[] keyBytes = readAllBytes(keyFile);
-        PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(keyBytes);
-        KeyFactory kf = KeyFactory.getInstance("RSA");
-        return kf.generatePrivate(spec);
-    }
-
-    private X509Certificate loadCertificate(File certFile) throws Exception {
-        CertificateFactory cf = CertificateFactory.getInstance("X.509");
-        try (FileInputStream fis = new FileInputStream(certFile)) {
-            return (X509Certificate) cf.generateCertificate(fis);
-        }
-    }
-
-    private byte[] readAllBytes(File file) throws IOException {
-        try (FileInputStream fis = new FileInputStream(file);
-             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[8192];
-            int len;
-            while ((len = fis.read(buffer)) != -1) {
-                bos.write(buffer, 0, len);
-            }
-            return bos.toByteArray();
         }
     }
 
