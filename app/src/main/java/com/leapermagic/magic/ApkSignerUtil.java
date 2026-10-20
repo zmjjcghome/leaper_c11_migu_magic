@@ -13,11 +13,11 @@ import org.bouncycastle.asn1.x509.AlgorithmIdentifier;
 import org.bouncycastle.asn1.x509.Extension;
 import org.bouncycastle.asn1.x509.KeyUsage;
 import org.bouncycastle.cert.X509CertificateHolder;
-import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
-import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.cert.X509v3CertificateBuilder;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.operator.ContentSigner;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -31,6 +31,7 @@ import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.Security;
 import java.security.Signature;
+import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Collections;
 import java.util.Date;
@@ -155,7 +156,6 @@ public class ApkSignerUtil {
                     .setV1SigningEnabled(true)  // V1 签名
                     .setV2SigningEnabled(true)  // V2 签名
                     .setV3SigningEnabled(true); // V3 签名 (Android 9+)
-                    // .setMinSdkVersion(28); // 显式指定最小支持版本
 
             log("开始执行多版本 (V1/V2/V3) 签名算法...");
             builder.build().sign();
@@ -200,7 +200,7 @@ public class ApkSignerUtil {
             } else {
                 log("检测到本地已存在 Keystore，正在校验: " + localKeystoreFile.getAbsolutePath());
                 try {
-                    KeyStore testStore = KeyStore.getInstance("PKCS12", new BouncyCastleProvider());
+                    KeyStore testStore = KeyStore.getInstance("PKCS12");
                     try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                         testStore.load(fis, KEY_PASSWORD);
                     }
@@ -217,7 +217,7 @@ public class ApkSignerUtil {
             }
 
             // 加载最终的 KeyStore
-            KeyStore keyStore = KeyStore.getInstance("PKCS12", new BouncyCastleProvider());
+            KeyStore keyStore = KeyStore.getInstance("PKCS12");
             try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                 keyStore.load(fis, KEY_PASSWORD);
             }
@@ -231,7 +231,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 核心：使用 Android 原生 Signature 替代 JcaContentSignerBuilder，彻底杜绝算法找不到报错
+     * 核心：纯 Java 代码生成符合 apksig 规范的自签名 Keystore 文件（完全基于系统原生 API 转码）
      */
     private boolean generateAndSaveKeystore(File keystoreFile) {
         try {
@@ -240,7 +240,7 @@ public class ApkSignerUtil {
             keyPairGen.initialize(2048);
             KeyPair keyPair = keyPairGen.generateKeyPair();
 
-            log("2/3: 正在通过安全证书构建器生成自签名证书...");
+            log("2/3: 正在通过 BouncyCastle 结合系统原生 API 生成自签名证书...");
             long now = System.currentTimeMillis();
             Date startDate = new Date(now - 86400000L * 7); // 7天前开始生效
             Date endDate = new Date(now + 30L * 365L * 86400000L); // 有效期 30 年
@@ -248,31 +248,35 @@ public class ApkSignerUtil {
 
             X500Name subjectAndIssuer = new X500Name("CN=Android Debug, O=Android, C=US");
 
-            JcaX509v3CertificateBuilder certBuilder = new JcaX509v3CertificateBuilder(
+            // 使用纯 BouncyCastle 的 X509v3CertificateBuilder (不依赖 Jca 类，避免 Provider 冲突)
+            org.bouncycastle.asn1.x509.SubjectPublicKeyInfo pubKeyInfo = 
+                    org.bouncycastle.asn1.x509.SubjectPublicKeyInfo.getInstance(keyPair.getPublic().getEncoded());
+
+            X509v3CertificateBuilder certBuilder = new X509v3CertificateBuilder(
                     subjectAndIssuer,
                     serialNumber,
                     startDate,
                     endDate,
                     subjectAndIssuer,
-                    keyPair.getPublic()
+                    pubKeyInfo
             );
 
             // 必须添加 KeyUsage 权限扩展，否则 apksig 会拒绝签名
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment);
-            certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
+            certBuilder.addExtension(org.bouncycastle.asn1.x509.Extension.keyUsage, true, keyUsage);
 
-            // 使用自定义的原生 ContentSigner（彻底绕过 JcaContentSignerBuilder 字符串匹配 Bug）
+            // 使用前面定义的原生 ContentSigner（完全调用 Android 系统 Signature.getInstance("SHA256withRSA")）
             ContentSigner contentSigner = new StandardRsaContentSigner(keyPair.getPrivate());
 
             X509CertificateHolder certHolder = certBuilder.build(contentSigner);
-            
-            BouncyCastleProvider bcProvider = new BouncyCastleProvider();
-            X509Certificate cert = new JcaX509CertificateConverter()
-                    .setProvider(bcProvider)
-                    .getCertificate(certHolder);
+
+            // 【关键修复】使用 Android 系统内置的 CertificateFactory ("X.509") 转码，彻底杜绝 X.509 not found 报错
+            byte[] certBytes = certHolder.getEncoded();
+            CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
+            X509Certificate cert = (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certBytes));
 
             log("3/3: 正在创建 PKCS12 格式的 Keystore 并持久化保存...");
-            KeyStore keyStore = KeyStore.getInstance("PKCS12", bcProvider);
+            KeyStore keyStore = KeyStore.getInstance("PKCS12");
             keyStore.load(null, null);
             keyStore.setKeyEntry(KEY_ALIAS, keyPair.getPrivate(), KEY_PASSWORD, new java.security.cert.Certificate[]{cert});
 
@@ -296,7 +300,7 @@ public class ApkSignerUtil {
 
     /**
      * 原生轻量级 ContentSigner 实现类：
-     * 完全依赖 Android 系统内置的 Signature.getInstance("SHA256withRSA")，100% 稳定安全
+     * 完全依赖 Android 系统内置的 Signature.getInstance("SHA256withRSA")
      */
     private static class StandardRsaContentSigner implements ContentSigner {
         private final PrivateKey privateKey;
