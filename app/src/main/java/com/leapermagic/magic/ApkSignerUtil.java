@@ -79,7 +79,9 @@ public class ApkSignerUtil {
 
             File p12File = new File(context.getFilesDir(), KEYSTORE_FILENAME);
             // 明确指定使用 BC Provider 加载 PKCS12，确保完美兼容
-            KeyStore keyStore = KeyStore.getInstance("PKCS12");
+            // 【修复】：不要指定 "PKCS12"，直接使用默认类型，Android 会根据文件内容自动识别
+            KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+
             try (FileInputStream fis = new FileInputStream(p12File)) {
                 keyStore.load(fis, KEYSTORE_PASSWORD.toCharArray());
             }
