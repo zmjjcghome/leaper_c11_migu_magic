@@ -1,67 +1,55 @@
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, KeyUsagePurpose, ExtendedKeyUsagePurpose};
-use p12_keystore::{KeyStore, KeyStoreEntry, PrivateKeyChain, PrivateKey};
+use p12_keystore::{KeyStore, KeyStoreEntry, PrivateKey, PrivateKeyChain, Certificate};
 use time::{OffsetDateTime, Duration};
-use std::env;
 use std::fs;
-use std::path::Path;
-use std::convert::TryInto;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. 获取传入的输出目录参数，默认为当前目录
-    let args: Vec<String> = env::args().collect();
-    let out_dir = if args.len() > 1 { &args[1] } else { "." };
-    fs::create_dir_all(out_dir)?;
-
-    // 2. 配置证书参数
+    // 1. 配置证书参数
     let mut params = CertificateParams::default();
     
+    // 设置证书主题信息 (Subject DN)
     let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, "AutoSign");
-    dn.push(DnType::OrganizationName, "AutoSign");
-    dn.push(DnType::OrganizationalUnitName, "Dev");
+    dn.push(DnType::CommonName, "Android Debug");
+    dn.push(DnType::OrganizationName, "My Android App");
     dn.push(DnType::CountryName, "CN");
     params.distinguished_name = dn;
 
-    // 有效期 30 年 (10950天)
+    // 设置证书有效期 (例如：10年)
     params.not_before = OffsetDateTime::now_utc() - Duration::hours(1);
-    params.not_after = OffsetDateTime::now_utc() + Duration::days(10950);
+    params.not_after = OffsetDateTime::now_utc() + Duration::days(365 * 10);
 
-    params.key_usages = vec![
-        KeyUsagePurpose::DigitalSignature,
-    ];
-    params.extended_key_usages = vec![
-        ExtendedKeyUsagePurpose::CodeSigning,
-    ];
+    // 设置密钥用途 (用于代码签名)
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::CodeSigning];
 
-    // 3. 生成自签名证书和密钥对 (rcgen 0.14 API)
+    // 2. 生成自签名证书和密钥对
     let key_pair = KeyPair::generate()?;
     let cert = params.self_signed(&key_pair)?;
 
-    // 4. 构建 PKCS#12 密钥库
+    // 3. 构建 PKCS#12 密钥库
+    // 修复 E0061: PrivateKeyChain::new 需要 3 个参数: (key_id, private_key, certificates)
+    let p12_key = PrivateKey::from_der(&key_pair.serialize_der())?;
+    let p12_cert = Certificate::from_der(cert.der())?;
+    
+    // 使用一个唯一的 key-id，这里简单使用 "android-key"
+    let chain = PrivateKeyChain::new(
+        b"android-key".to_vec(), 
+        p12_key, 
+        vec![p12_cert]
+    );
+    
+    // 4. 将证书链添加到 KeyStore
+    // 修复 E0308: add_entry 的第一个参数需要 &str，而不是 String
+    let friendly_name = "my-key-alias"; 
     let mut keystore = KeyStore::new();
-    
-    let local_key_id = b"autosign_id".to_vec();
-    
-    // 将 rcgen 生成的私钥 DER 转换为 p12_keystore 的 PrivateKey 类型
-    let private_key: PrivateKey = key_pair.serialize_der().as_slice().try_into()?;
-    
-    // 证书链列表
-    let certs = vec![cert.der().to_vec()];
+    keystore.add_entry(friendly_name, KeyStoreEntry::PrivateKeyChain(chain));
 
-    // 构造 PrivateKeyChain
-    let chain = PrivateKeyChain::new(local_key_id, private_key, certs);
-    
-    // add_entry 的别名参数传入 &str 字符串切片
-    keystore.add_entry("autosign_alias", KeyStoreEntry::PrivateKeyChain(chain));
-
-    // 5. 导出为 .p12 文件（固定密码为 changeit，与 Java 层保持一致）
-    let p12_password = "changeit";
+    // 5. 导出为 .p12 文件
+    let p12_password = "android_keystore_password"; 
     let p12_bytes = keystore.writer(p12_password).write()?;
     
-    let p12_path = Path::new(out_dir).join("autosign.p12");
-    fs::write(&p12_path, p12_bytes)?;
-    
-    println!("✅ 成功生成 P12 签名证书: {}", p12_path.display());
+    fs::write("android_release.p12", p12_bytes)?;
+    println!("✅ 成功生成 Android 签名证书: android_release.p12");
 
     Ok(())
 }
