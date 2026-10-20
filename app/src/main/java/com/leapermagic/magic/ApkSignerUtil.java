@@ -7,7 +7,9 @@ import android.util.Log;
 
 import com.android.apksig.ApkSigner;
 
+import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
 import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.AlgorithmIdentifier;
 import org.bouncycastle.asn1.x509.Extension;
 import org.bouncycastle.asn1.x509.KeyUsage;
 import org.bouncycastle.cert.X509CertificateHolder;
@@ -15,18 +17,20 @@ import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.operator.ContentSigner;
-import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.math.BigInteger;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.Security;
+import java.security.Signature;
 import java.security.cert.X509Certificate;
 import java.util.Collections;
 import java.util.Date;
@@ -150,8 +154,8 @@ public class ApkSignerUtil {
                     .setOutputApk(outputFile)
                     .setV1SigningEnabled(true)  // V1 签名
                     .setV2SigningEnabled(true)  // V2 签名
-                    .setV3SigningEnabled(true)  // V3 签名 (Android 9+)
-                    .setMinSdkVersion(28);     // 确保适配 Android 9+
+                    .setV3SigningEnabled(true); // V3 签名 (Android 9+)
+                    // .setMinSdkVersion(28); // 显式指定最小支持版本
 
             log("开始执行多版本 (V1/V2/V3) 签名算法...");
             builder.build().sign();
@@ -227,7 +231,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 核心：纯 Java 代码生成符合 apksig 规范的自签名 Keystore 文件
+     * 核心：使用 Android 原生 Signature 替代 JcaContentSignerBuilder，彻底杜绝算法找不到报错
      */
     private boolean generateAndSaveKeystore(File keystoreFile) {
         try {
@@ -236,7 +240,7 @@ public class ApkSignerUtil {
             keyPairGen.initialize(2048);
             KeyPair keyPair = keyPairGen.generateKeyPair();
 
-            log("2/3: 正在通过 BouncyCastle 生成符合 apksig 规范的自签名证书...");
+            log("2/3: 正在通过安全证书构建器生成自签名证书...");
             long now = System.currentTimeMillis();
             Date startDate = new Date(now - 86400000L * 7); // 7天前开始生效
             Date endDate = new Date(now + 30L * 365L * 86400000L); // 有效期 30 年
@@ -257,14 +261,12 @@ public class ApkSignerUtil {
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment);
             certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
-            BouncyCastleProvider bcProvider = new BouncyCastleProvider();
-
-            // 【关键修复】使用标准的 OID 数字标识 ("1.2.840.113549.1.1.11") 代替算法名称字符串，彻底杜绝字符串解析失败
-            ContentSigner contentSigner = new JcaContentSignerBuilder("1.2.840.113549.1.1.11")
-                    .setProvider(bcProvider)
-                    .build(keyPair.getPrivate());
+            // 使用自定义的原生 ContentSigner（彻底绕过 JcaContentSignerBuilder 字符串匹配 Bug）
+            ContentSigner contentSigner = new StandardRsaContentSigner(keyPair.getPrivate());
 
             X509CertificateHolder certHolder = certBuilder.build(contentSigner);
+            
+            BouncyCastleProvider bcProvider = new BouncyCastleProvider();
             X509Certificate cert = new JcaX509CertificateConverter()
                     .setProvider(bcProvider)
                     .getCertificate(certHolder);
@@ -289,6 +291,43 @@ public class ApkSignerUtil {
                 keystoreFile.delete();
             }
             return false;
+        }
+    }
+
+    /**
+     * 原生轻量级 ContentSigner 实现类：
+     * 完全依赖 Android 系统内置的 Signature.getInstance("SHA256withRSA")，100% 稳定安全
+     */
+    private static class StandardRsaContentSigner implements ContentSigner {
+        private final PrivateKey privateKey;
+        private final ByteArrayOutputStream stream = new ByteArrayOutputStream();
+        private final AlgorithmIdentifier algorithmIdentifier = new AlgorithmIdentifier(PKCSObjectIdentifiers.sha256WithRSAEncryption);
+
+        public StandardRsaContentSigner(PrivateKey privateKey) {
+            this.privateKey = privateKey;
+        }
+
+        @Override
+        public AlgorithmIdentifier getAlgorithmIdentifier() {
+            return algorithmIdentifier;
+        }
+
+        @Override
+        public OutputStream getOutputStream() {
+            return stream;
+        }
+
+        @Override
+        public byte[] getSignature() {
+            try {
+                byte[] dataToSign = stream.toByteArray();
+                Signature signature = Signature.getInstance("SHA256withRSA");
+                signature.initSign(privateKey);
+                signature.update(dataToSign);
+                return signature.sign();
+            } catch (Exception e) {
+                throw new RuntimeException("StandardRsaContentSigner 签名出错: " + e.getMessage(), e);
+            }
         }
     }
 }
