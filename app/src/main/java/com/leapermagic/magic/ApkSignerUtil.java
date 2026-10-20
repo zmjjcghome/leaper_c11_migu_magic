@@ -39,7 +39,7 @@ import java.util.Date;
 public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
-    private static final String KEYSTORE_NAME = "debug.bks"; // 改用标准的 BKS 后缀
+    private static final String KEYSTORE_NAME = "debug.keystore"; // 恢复标准的 keystore 后缀
     private static final String KEY_ALIAS = "androiddebugkey";
     private static final char[] KEY_PASSWORD = "android".toCharArray();
 
@@ -184,7 +184,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 获取或通过 Java 代码动态生成 BKS 格式的 Keystore
+     * 获取或通过 Java 代码动态生成 Keystore（使用 BouncyCastle 提供的 PKCS12 引擎）
      */
     private KeyStore getOrCreateAndLoadKeyStore() {
         try {
@@ -193,7 +193,7 @@ public class ApkSignerUtil {
 
             // 如果本地文件不存在，直接通过 Java 代码动态生成
             if (!localKeystoreFile.exists()) {
-                log("本地未检测到 Keystore，正在通过 BouncyCastle 动态生成 BKS 密钥库...");
+                log("本地未检测到 Keystore，正在通过 BouncyCastle 动态生成...");
                 boolean generated = generateAndSaveKeystore(localKeystoreFile, bcProvider);
                 if (!generated) {
                     return null;
@@ -201,7 +201,8 @@ public class ApkSignerUtil {
             } else {
                 log("检测到本地已存在 Keystore，正在校验: " + localKeystoreFile.getAbsolutePath());
                 try {
-                    KeyStore testStore = KeyStore.getInstance("BKS", bcProvider);
+                    // 【关键修复】显式传入 bcProvider 实例，使用 BouncyCastle 自带的 PKCS12 引擎
+                    KeyStore testStore = KeyStore.getInstance("PKCS12", bcProvider);
                     try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                         testStore.load(fis, KEY_PASSWORD);
                     }
@@ -217,8 +218,8 @@ public class ApkSignerUtil {
                 }
             }
 
-            // 加载最终的 BKS KeyStore
-            KeyStore keyStore = KeyStore.getInstance("BKS", bcProvider);
+            // 加载最终的 KeyStore
+            KeyStore keyStore = KeyStore.getInstance("PKCS12", bcProvider);
             try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                 keyStore.load(fis, KEY_PASSWORD);
             }
@@ -232,7 +233,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 核心：使用 BKS 格式动态生成符合 apksig 规范的自签名 Keystore 文件
+     * 核心：纯 Java 代码生成符合 apksig 规范的自签名 Keystore 文件
      */
     private boolean generateAndSaveKeystore(File keystoreFile, BouncyCastleProvider bcProvider) {
         try {
@@ -261,7 +262,7 @@ public class ApkSignerUtil {
                     pubKeyInfo
             );
 
-            // 必须添加 KeyUsage 权限扩展
+            // 必须添加 KeyUsage 权限扩展，否则 apksig 会拒绝签名
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment);
             certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
@@ -272,9 +273,9 @@ public class ApkSignerUtil {
             CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
             X509Certificate cert = (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certBytes));
 
-            log("3/3: 正在创建 BKS 格式的 Keystore 并持久化保存...");
-            // 【关键修改】使用 BKS 格式，并绑定 bcProvider 实例，彻底规避 PKCS12 在部分系统上找不到的问题
-            KeyStore keyStore = KeyStore.getInstance("BKS", bcProvider);
+            log("3/3: 正在创建 PKCS12 格式的 Keystore 并持久化保存...");
+            // 【关键修复】使用 BouncyCastle 的 PKCS12 引擎，彻底摆脱系统限制
+            KeyStore keyStore = KeyStore.getInstance("PKCS12", bcProvider);
             keyStore.load(null, null);
             keyStore.setKeyEntry(KEY_ALIAS, keyPair.getPrivate(), KEY_PASSWORD, new java.security.cert.Certificate[]{cert});
 
@@ -283,11 +284,11 @@ public class ApkSignerUtil {
                 keyStore.store(fos, KEY_PASSWORD);
             }
 
-            log("BKS Keystore 动态生成成功！保存路径: " + keystoreFile.getAbsolutePath());
+            log("Keystore 动态生成成功！保存路径: " + keystoreFile.getAbsolutePath());
             return true;
 
         } catch (Exception e) {
-            log("动态生成 BKS Keystore 失败: " + e.getMessage());
+            log("动态生成 Keystore 失败: " + e.getMessage());
             e.printStackTrace();
             if (keystoreFile.exists()) {
                 keystoreFile.delete();
