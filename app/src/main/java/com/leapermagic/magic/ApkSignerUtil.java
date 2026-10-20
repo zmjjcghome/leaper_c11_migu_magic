@@ -145,7 +145,7 @@ public class ApkSignerUtil {
             log("当前设备架构 ABI: " + abi);
 
             String assetPath = "bin/" + abi + "/cert_generator";
-            File execFile = new File(context.getCacheDir(), "cert_generator");
+            File execFile = new File(context.getFilesDir(), "cert_generator");
 
             // 从 assets 中复制对应的可执行文件到 cache 目录
             try (InputStream in = context.getAssets().open(assetPath);
