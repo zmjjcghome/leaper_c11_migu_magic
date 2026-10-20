@@ -22,9 +22,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     params.not_before = not_before;
     params.not_after = not_after;
 
-    // 3. 生成 RSA 2048 密钥对并签发证书
+    // 3. 生成 RSA 2048 密钥对并签发自签名证书 (rcgen 0.13 新 API)
     let key_pair = KeyPair::generate_for(&PKCS_RSA_SHA256)?;
-    let cert = params.signed_by(&key_pair, &key_pair)?;
+    let cert = params.self_signed(&key_pair)?;
 
     // 4. 导出为标准 DER 格式文件
     let key_path = Path::new(out_dir).join("private_key.der");
