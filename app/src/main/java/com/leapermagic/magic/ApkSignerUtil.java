@@ -25,23 +25,23 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.math.BigInteger;
+import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
-import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.Security;
 import java.security.Signature;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Collections;
 import java.util.Date;
 
 public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
-    private static final String KEYSTORE_NAME = "debug.keystore"; // 恢复标准的 keystore 后缀
-    private static final String KEY_ALIAS = "androiddebugkey";
-    private static final char[] KEY_PASSWORD = "android".toCharArray();
+    private static final String KEY_FILE_NAME = "signing_private.key";
+    private static final String CERT_FILE_NAME = "signing_cert.crt";
 
     static {
         try {
@@ -122,23 +122,13 @@ public class ApkSignerUtil {
             }
             log("输入 APK 临时文件准备就绪: " + inputTempFile.getAbsolutePath());
 
-            // 检查或通过 Java 代码自动生成 Keystore
+            // 获取或动态生成签名密钥对与证书
             log("正在加载或动态生成签名密钥...");
-            KeyStore keyStore = getOrCreateAndLoadKeyStore();
-            if (keyStore == null) {
-                log("错误: 无法加载或生成签名 Keystore");
-                return false;
-            }
+            PrivateKey privateKey = loadOrGeneratePrivateKey();
+            X509Certificate cert = loadOrGenerateCertificate(privateKey);
 
-            PrivateKey privateKey = (PrivateKey) keyStore.getKey(KEY_ALIAS, KEY_PASSWORD);
-            if (privateKey == null) {
-                log("错误: 未能在 Keystore 中找到私钥，别名: " + KEY_ALIAS);
-                return false;
-            }
-
-            X509Certificate cert = (X509Certificate) keyStore.getCertificate(KEY_ALIAS);
-            if (cert == null) {
-                log("错误: 未能在 Keystore 中找到证书，别名: " + KEY_ALIAS);
+            if (privateKey == null || cert == null) {
+                log("错误: 无法获取有效的私钥或证书");
                 return false;
             }
 
@@ -149,7 +139,7 @@ public class ApkSignerUtil {
                     "CERT", privateKey, Collections.singletonList(cert)
             ).build();
 
-            // 配置 ApkSigner 构建器：同时开启 V1, V2, V3 签名，显式指定最小支持版本 28 (Android 9+)
+            // 配置 ApkSigner 构建器：同时开启 V1, V2, V3 签名
             ApkSigner.Builder builder = new ApkSigner.Builder(Collections.singletonList(signerConfig))
                     .setInputApk(inputTempFile)
                     .setOutputApk(outputFile)
@@ -184,116 +174,131 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 获取或通过 Java 代码动态生成 Keystore（使用 BouncyCastle 提供的 PKCS12 引擎）
+     * 加载私钥，如果本地不存在则自动生成并保存
      */
-    private KeyStore getOrCreateAndLoadKeyStore() {
+    private PrivateKey loadOrGeneratePrivateKey() {
         try {
-            File localKeystoreFile = new File(context.getFilesDir(), KEYSTORE_NAME);
-            BouncyCastleProvider bcProvider = new BouncyCastleProvider();
+            File keyFile = new File(context.getFilesDir(), KEY_FILE_NAME);
+            File certFile = new File(context.getFilesDir(), CERT_FILE_NAME);
 
-            // 如果本地文件不存在，直接通过 Java 代码动态生成
-            if (!localKeystoreFile.exists()) {
-                log("本地未检测到 Keystore，正在通过 BouncyCastle 动态生成...");
-                boolean generated = generateAndSaveKeystore(localKeystoreFile, bcProvider);
-                if (!generated) {
-                    return null;
-                }
-            } else {
-                log("检测到本地已存在 Keystore，正在校验: " + localKeystoreFile.getAbsolutePath());
-                try {
-                    // 【关键修复】显式传入 bcProvider 实例，使用 BouncyCastle 自带的 PKCS12 引擎
-                    KeyStore testStore = KeyStore.getInstance("PKCS12", bcProvider);
-                    try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
-                        testStore.load(fis, KEY_PASSWORD);
-                    }
-                    if (!testStore.containsAlias(KEY_ALIAS)) {
-                        log("本地 Keystore 缺少别名，重新生成...");
-                        localKeystoreFile.delete();
-                        generateAndSaveKeystore(localKeystoreFile, bcProvider);
-                    }
-                } catch (Exception e) {
-                    log("本地 Keystore 损坏，重新生成...");
-                    localKeystoreFile.delete();
-                    generateAndSaveKeystore(localKeystoreFile, bcProvider);
-                }
+            // 如果文件已存在，直接从本地二进制读取
+            if (keyFile.exists() && certFile.exists()) {
+                log("检测到本地已存在签名文件，正在加载...");
+                byte[] keyBytes = readFileBytes(keyFile);
+                PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(keyBytes);
+                KeyFactory kf = KeyFactory.getInstance("RSA");
+                return kf.generatePrivate(spec);
             }
 
-            // 加载最终的 KeyStore
-            KeyStore keyStore = KeyStore.getInstance("PKCS12", bcProvider);
-            try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
-                keyStore.load(fis, KEY_PASSWORD);
-            }
-            return keyStore;
+            // 如果不存在，自动生成全新的密钥对与证书
+            log("本地未检测到签名文件，正在自动生成全新密钥对...");
+            KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA");
+            keyPairGen.initialize(2048);
+            KeyPair keyPair = keyPairGen.generateKeyPair();
+
+            // 保存私钥字节
+            writeFileBytes(keyFile, keyPair.getPrivate().getEncoded());
+
+            // 生成并保存证书字节
+            X509Certificate cert = generateSelfSignedCert(keyPair);
+            writeFileBytes(certFile, cert.getEncoded());
+
+            log("新签名文件已成功生成并持久化。");
+            return keyPair.getPrivate();
 
         } catch (Exception e) {
-            log("加载或生成 Keystore 异常: " + e.getMessage());
+            log("加载或生成私钥异常: " + e.getMessage());
             e.printStackTrace();
             return null;
         }
     }
 
     /**
-     * 核心：纯 Java 代码生成符合 apksig 规范的自签名 Keystore 文件
+     * 加载证书，如果不存在则由私钥重新生成
      */
-    private boolean generateAndSaveKeystore(File keystoreFile, BouncyCastleProvider bcProvider) {
+    private X509Certificate loadOrGenerateCertificate(PrivateKey privateKey) {
         try {
-            log("1/3: 正在生成 2048 位 RSA 密钥对...");
-            KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA");
-            keyPairGen.initialize(2048);
-            KeyPair keyPair = keyPairGen.generateKeyPair();
-
-            log("2/3: 正在生成自签名证书...");
-            long now = System.currentTimeMillis();
-            Date startDate = new Date(now - 86400000L * 7); // 7天前开始生效
-            Date endDate = new Date(now + 30L * 365L * 86400000L); // 有效期 30 年
-            BigInteger serialNumber = BigInteger.valueOf(now);
-
-            X500Name subjectAndIssuer = new X500Name("CN=Android Debug, O=Android, C=US");
-
-            org.bouncycastle.asn1.x509.SubjectPublicKeyInfo pubKeyInfo = 
-                    org.bouncycastle.asn1.x509.SubjectPublicKeyInfo.getInstance(keyPair.getPublic().getEncoded());
-
-            X509v3CertificateBuilder certBuilder = new X509v3CertificateBuilder(
-                    subjectAndIssuer,
-                    serialNumber,
-                    startDate,
-                    endDate,
-                    subjectAndIssuer,
-                    pubKeyInfo
-            );
-
-            // 必须添加 KeyUsage 权限扩展，否则 apksig 会拒绝签名
-            KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment);
-            certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
-
-            ContentSigner contentSigner = new StandardRsaContentSigner(keyPair.getPrivate());
-            X509CertificateHolder certHolder = certBuilder.build(contentSigner);
-
-            byte[] certBytes = certHolder.getEncoded();
-            CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
-            X509Certificate cert = (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certBytes));
-
-            log("3/3: 正在创建 PKCS12 格式的 Keystore 并持久化保存...");
-            // 【关键修复】使用 BouncyCastle 的 PKCS12 引擎，彻底摆脱系统限制
-            KeyStore keyStore = KeyStore.getInstance("PKCS12", bcProvider);
-            keyStore.load(null, null);
-            keyStore.setKeyEntry(KEY_ALIAS, keyPair.getPrivate(), KEY_PASSWORD, new java.security.cert.Certificate[]{cert});
-
-            // 写入本地文件
-            try (FileOutputStream fos = new FileOutputStream(keystoreFile)) {
-                keyStore.store(fos, KEY_PASSWORD);
+            File certFile = new File(context.getFilesDir(), CERT_FILE_NAME);
+            if (certFile.exists()) {
+                byte[] certBytes = readFileBytes(certFile);
+                CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
+                return (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certBytes));
             }
-
-            log("Keystore 动态生成成功！保存路径: " + keystoreFile.getAbsolutePath());
-            return true;
-
+            // 兜底：如果私钥存在但证书丢失，重新生成
+            File keyFile = new File(context.getFilesDir(), KEY_FILE_NAME);
+            if (keyFile.exists()) {
+                KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA");
+                keyPairGen.initialize(2048);
+                // 这里重新生成一对匹配的临时证书
+                KeyPair kp = new KeyPair(null, privateKey); // 注：仅用于恢复
+                // 简化起见，直接调用完整生成
+                boolean deleted1 = keyFile.delete();
+                boolean deleted2 = certFile.delete();
+                PrivateKey newKey = loadOrGeneratePrivateKey();
+                if (newKey != null) {
+                    byte[] certBytes = readFileBytes(certFile);
+                    CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
+                    return (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certBytes));
+                }
+            }
+            return null;
         } catch (Exception e) {
-            log("动态生成 Keystore 失败: " + e.getMessage());
+            log("加载证书异常: " + e.getMessage());
             e.printStackTrace();
-            if (keystoreFile.exists()) {
-                keystoreFile.delete();
+            return null;
+        }
+    }
+
+    /**
+     * 生成自签名 X.509 证书
+     */
+    private X509Certificate generateSelfSignedCert(KeyPair keyPair) throws Exception {
+        long now = System.currentTimeMillis();
+        Date startDate = new Date(now - 86400000L * 7); // 7天前
+        Date endDate = new Date(now + 30L * 365L * 86400000L); // 30年有效期
+        BigInteger serialNumber = BigInteger.valueOf(now);
+
+        X500Name subjectAndIssuer = new X500Name("CN=Android Debug, O=Android, C=US");
+
+        org.bouncycastle.asn1.x509.SubjectPublicKeyInfo pubKeyInfo = 
+                org.bouncycastle.asn1.x509.SubjectPublicKeyInfo.getInstance(keyPair.getPublic().getEncoded());
+
+        X509v3CertificateBuilder certBuilder = new X509v3CertificateBuilder(
+                subjectAndIssuer,
+                serialNumber,
+                startDate,
+                endDate,
+                subjectAndIssuer,
+                pubKeyInfo
+        );
+
+        KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment);
+        certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
+
+        ContentSigner contentSigner = new StandardRsaContentSigner(keyPair.getPrivate());
+        X509CertificateHolder certHolder = certBuilder.build(contentSigner);
+
+        byte[] certBytes = certHolder.getEncoded();
+        CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
+        return (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certBytes));
+    }
+
+    private byte[] readFileBytes(File file) throws Exception {
+        try (FileInputStream fis = new FileInputStream(file);
+             ByteArrayOutputStream bos = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = fis.read(buffer)) != -1) {
+                bos.write(buffer, 0, read);
             }
-            return false;
+            return bos.toByteArray();
+        }
+    }
+
+    private void writeFileBytes(File file, byte[] data) throws Exception {
+        try (FileOutputStream fos = new FileOutputStream(file)) {
+            fos.write(data);
+            fos.flush();
         }
     }
 
