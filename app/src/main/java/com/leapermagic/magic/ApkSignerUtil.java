@@ -125,7 +125,7 @@ public class ApkSignerUtil {
             // 获取或动态生成签名密钥对与证书
             log("正在加载或动态生成签名密钥...");
             PrivateKey privateKey = loadOrGeneratePrivateKey();
-            X509Certificate cert = loadOrGenerateCertificate(privateKey);
+            X509Certificate cert = loadOrGenerateCertificate();
 
             if (privateKey == null || cert == null) {
                 log("错误: 无法获取有效的私钥或证书");
@@ -145,8 +145,7 @@ public class ApkSignerUtil {
                     .setOutputApk(outputFile)
                     .setV1SigningEnabled(true)  // V1 签名
                     .setV2SigningEnabled(true)  // V2 签名
-                    .setV3SigningEnabled(false)  // V3 签名 (Android 9+)
-                    .setMinSdkVersion(28);     // 【关键修复】显式指定最小支持版本，防止 V3 签名块解析清单失败
+                    .setV3SigningEnabled(true); // V3 签名 (Android 9+)
 
             log("开始执行多版本 (V1/V2/V3) 签名算法...");
             builder.build().sign();
@@ -182,18 +181,23 @@ public class ApkSignerUtil {
             File keyFile = new File(context.getFilesDir(), KEY_FILE_NAME);
             File certFile = new File(context.getFilesDir(), CERT_FILE_NAME);
 
+            BouncyCastleProvider bcProvider = new BouncyCastleProvider();
+
             // 如果文件已存在，直接从本地二进制读取
             if (keyFile.exists() && certFile.exists()) {
                 log("检测到本地已存在签名文件，正在加载...");
                 byte[] keyBytes = readFileBytes(keyFile);
                 PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(keyBytes);
-                KeyFactory kf = KeyFactory.getInstance("RSA");
+                // 【关键修复】使用 BouncyCastle 的 KeyFactory 加载私钥，确保与 apksig 完全兼容
+                KeyFactory kf = KeyFactory.getInstance("RSA", bcProvider);
                 return kf.generatePrivate(spec);
             }
 
             // 如果不存在，自动生成全新的密钥对与证书
-            log("本地未检测到签名文件，正在自动生成全新密钥对...");
-            KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA");
+            log("本地未检测到签名文件，正在通过 BouncyCastle 自动生成全新密钥对...");
+            
+            // 【关键修复】强制使用 BouncyCastle 生成 RSA 密钥对，杜绝系统默认私钥编码不兼容问题
+            KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA", bcProvider);
             keyPairGen.initialize(2048);
             KeyPair keyPair = keyPairGen.generateKeyPair();
 
@@ -215,9 +219,9 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 加载证书，如果不存在则由私钥重新生成
+     * 加载证书
      */
-    private X509Certificate loadOrGenerateCertificate(PrivateKey privateKey) {
+    private X509Certificate loadOrGenerateCertificate() {
         try {
             File certFile = new File(context.getFilesDir(), CERT_FILE_NAME);
             if (certFile.exists()) {
