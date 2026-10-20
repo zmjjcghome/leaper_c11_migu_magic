@@ -23,10 +23,10 @@ public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
     
-    // 与 Rust 生成的 P12 保持一致的配置
-    private static final String KEYSTORE_FILENAME = "android_release.p12";
-    private static final String KEYSTORE_PASSWORD = "android_keystore_password";
-    private static final String KEY_ALIAS = "my-key-alias";
+    // 密钥库配置（与 keytool 生成的参数完全一致）
+    private static final String KEYSTORE_FILENAME = "autosign.p12";
+    private static final String KEYSTORE_PASSWORD = "changeit";
+    private static final String KEY_ALIAS = "autosign_alias";
 
     private final Context context;
 
@@ -60,9 +60,9 @@ public class ApkSignerUtil {
     public boolean resignApk(ContentResolver contentResolver, Uri apkUri, File outputFile) {
         log("========== 签名开始 ==========");
         try {
-            // 1. 确保通过 Rust 成功生成或加载 p12 密钥库
-            if (!ensureCertificateGenerated()) {
-                log("❌ 无法获取有效的签名证书和私钥");
+            // 1. 确保 p12 密钥库已就绪（从 assets 释放到 filesDir）
+            if (!ensureKeystoreExtracted()) {
+                log("❌ 无法获取有效的签名密钥库");
                 return false;
             }
 
@@ -145,44 +145,28 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 检查或调用 Rust 可执行程序生成 p12 证书库
+     * 检查并从 assets 中提取 keytool 生成的 p12 密钥库到 filesDir
      */
-    private synchronized boolean ensureCertificateGenerated() {
+    private synchronized boolean ensureKeystoreExtracted() {
         File p12File = new File(context.getFilesDir(), KEYSTORE_FILENAME);
 
         if (p12File.exists()) {
             return true;
         }
 
-        log("本地证书不存在，正在调用 Rust 生成器...");
-        try {
-            // jniLibs 中的二进制文件会被系统自动解压到 nativeLibraryDir
-            File execFile = new File(context.getApplicationInfo().nativeLibraryDir, "libcert_generator.so");
-            
-            if (!execFile.exists()) {
-                log("❌ 找不到 Rust 可执行程序: " + execFile.getAbsolutePath());
-                return false;
+        log("本地密钥库不存在，正在从 assets 释放...");
+        try (InputStream in = context.getAssets().open(KEYSTORE_FILENAME);
+             OutputStream out = new FileOutputStream(p12File)) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
             }
-
-            String outputDir = context.getFilesDir().getAbsolutePath();
-            ProcessBuilder pb = new ProcessBuilder(execFile.getAbsolutePath(), outputDir);
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    log("[Rust] " + line);
-                }
-            }
-
-            int exitCode = process.waitFor();
-            log("Rust 进程退出码: " + exitCode);
-
-            return exitCode == 0 && p12File.exists();
+            log("✅ 密钥库释放成功: " + p12File.getAbsolutePath());
+            return true;
         } catch (Exception e) {
-            log("❌ 执行 Rust 证书生成器失败: " + e.getMessage());
-            Log.e(TAG, "Rust exec error", e);
+            log("❌ 释放密钥库失败: " + e.getMessage());
+            Log.e(TAG, "Extract keystore error", e);
             return false;
         }
     }
