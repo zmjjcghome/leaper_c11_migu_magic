@@ -22,13 +22,51 @@ jobs:
         run: |
           rustup target add armv7-linux-androideabi aarch64-linux-android x86_64-linux-android
 
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk
+      - name: Install Android NDK
+        uses: nttld/setup-ndk@v3
+        id: setup-ndk
+        with:
+          ndk-version: r26b
+          local-cache: true
 
       - name: Build for Android ABIs
         working-directory: rust-cert-generator
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          cargo ndk -t armeabi-v7a -t arm64-v8a -t x86_64 --min-sdk-version 21 build --release
+          # 自动获取 NDK 的工具链路径和 Clang 目标
+          # 针对 armeabi-v7a (API 21)
+          CC_armv7_linux_androideabi=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang
+          AR_armv7_linux_androideabi=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          
+          # 针对 arm64-v8a (API 21)
+          CC_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+          AR_aarch64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+          
+          # 针对 x86_64 (API 21)
+          CC_x86_64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android21-clang
+          AR_x86_64_linux_android=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
+
+          # 写入 cargo config.toml 使得编译时自动应用链接器
+          mkdir -p .cargo
+          cat << EOF > .cargo/config.toml
+          [target.armv7-linux-androideabi]
+          linker = "$CC_armv7_linux_androideabi"
+          ar = "$AR_armv7_linux_androideabi"
+
+          [target.aarch64-linux-android]
+          linker = "$CC_aarch64_linux_android"
+          ar = "$AR_aarch64_linux_android"
+
+          [target.x86_64-linux-android]
+          linker = "$CC_x86_64_linux_android"
+          ar = "$AR_x86_64_linux_android"
+          EOF
+
+          # 执行全架构编译
+          cargo build --target armv7-linux-androideabi --release
+          cargo build --target aarch64-linux-android --release
+          cargo build --target x86_64-linux-android --release
 
       - name: Copy binaries to Android Assets
         run: |
