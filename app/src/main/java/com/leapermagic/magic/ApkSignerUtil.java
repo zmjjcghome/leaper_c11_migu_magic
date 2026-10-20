@@ -145,7 +145,8 @@ public class ApkSignerUtil {
                     .setOutputApk(outputFile)
                     .setV1SigningEnabled(true)  // V1 签名
                     .setV2SigningEnabled(true)  // V2 签名
-                    .setV3SigningEnabled(true); // V3 签名 (Android 9+)
+                    .setV3SigningEnabled(true)  // V3 签名 (Android 9+)
+                    .setMinSdkVersion(28);     // 【关键修复】显式指定最小支持版本，防止 V3 签名块解析清单失败
 
             log("开始执行多版本 (V1/V2/V3) 签名算法...");
             builder.build().sign();
@@ -223,23 +224,6 @@ public class ApkSignerUtil {
                 byte[] certBytes = readFileBytes(certFile);
                 CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
                 return (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certBytes));
-            }
-            // 兜底：如果私钥存在但证书丢失，重新生成
-            File keyFile = new File(context.getFilesDir(), KEY_FILE_NAME);
-            if (keyFile.exists()) {
-                KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA");
-                keyPairGen.initialize(2048);
-                // 这里重新生成一对匹配的临时证书
-                KeyPair kp = new KeyPair(null, privateKey); // 注：仅用于恢复
-                // 简化起见，直接调用完整生成
-                boolean deleted1 = keyFile.delete();
-                boolean deleted2 = certFile.delete();
-                PrivateKey newKey = loadOrGeneratePrivateKey();
-                if (newKey != null) {
-                    byte[] certBytes = readFileBytes(certFile);
-                    CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
-                    return (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certBytes));
-                }
             }
             return null;
         } catch (Exception e) {
