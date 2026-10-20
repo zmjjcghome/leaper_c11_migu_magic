@@ -39,7 +39,7 @@ import java.util.Date;
 public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
-    private static final String KEYSTORE_NAME = "debug.keystore";
+    private static final String KEYSTORE_NAME = "debug.bks"; // 改用标准的 BKS 后缀
     private static final String KEY_ALIAS = "androiddebugkey";
     private static final char[] KEY_PASSWORD = "android".toCharArray();
 
@@ -184,40 +184,41 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 获取或通过 Java 代码动态生成 Keystore
+     * 获取或通过 Java 代码动态生成 BKS 格式的 Keystore
      */
     private KeyStore getOrCreateAndLoadKeyStore() {
         try {
             File localKeystoreFile = new File(context.getFilesDir(), KEYSTORE_NAME);
+            BouncyCastleProvider bcProvider = new BouncyCastleProvider();
 
             // 如果本地文件不存在，直接通过 Java 代码动态生成
             if (!localKeystoreFile.exists()) {
-                log("本地未检测到 Keystore，正在通过 Java 代码动态生成...");
-                boolean generated = generateAndSaveKeystore(localKeystoreFile);
+                log("本地未检测到 Keystore，正在通过 BouncyCastle 动态生成 BKS 密钥库...");
+                boolean generated = generateAndSaveKeystore(localKeystoreFile, bcProvider);
                 if (!generated) {
                     return null;
                 }
             } else {
                 log("检测到本地已存在 Keystore，正在校验: " + localKeystoreFile.getAbsolutePath());
                 try {
-                    KeyStore testStore = KeyStore.getInstance("PKCS12");
+                    KeyStore testStore = KeyStore.getInstance("BKS", bcProvider);
                     try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                         testStore.load(fis, KEY_PASSWORD);
                     }
                     if (!testStore.containsAlias(KEY_ALIAS)) {
                         log("本地 Keystore 缺少别名，重新生成...");
                         localKeystoreFile.delete();
-                        generateAndSaveKeystore(localKeystoreFile);
+                        generateAndSaveKeystore(localKeystoreFile, bcProvider);
                     }
                 } catch (Exception e) {
                     log("本地 Keystore 损坏，重新生成...");
                     localKeystoreFile.delete();
-                    generateAndSaveKeystore(localKeystoreFile);
+                    generateAndSaveKeystore(localKeystoreFile, bcProvider);
                 }
             }
 
-            // 加载最终的 KeyStore
-            KeyStore keyStore = KeyStore.getInstance("PKCS12");
+            // 加载最终的 BKS KeyStore
+            KeyStore keyStore = KeyStore.getInstance("BKS", bcProvider);
             try (FileInputStream fis = new FileInputStream(localKeystoreFile)) {
                 keyStore.load(fis, KEY_PASSWORD);
             }
@@ -231,16 +232,16 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 核心：纯 Java 代码生成符合 apksig 规范的自签名 Keystore 文件（完全基于系统原生 API 转码）
+     * 核心：使用 BKS 格式动态生成符合 apksig 规范的自签名 Keystore 文件
      */
-    private boolean generateAndSaveKeystore(File keystoreFile) {
+    private boolean generateAndSaveKeystore(File keystoreFile, BouncyCastleProvider bcProvider) {
         try {
             log("1/3: 正在生成 2048 位 RSA 密钥对...");
             KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA");
             keyPairGen.initialize(2048);
             KeyPair keyPair = keyPairGen.generateKeyPair();
 
-            log("2/3: 正在通过 BouncyCastle 结合系统原生 API 生成自签名证书...");
+            log("2/3: 正在生成自签名证书...");
             long now = System.currentTimeMillis();
             Date startDate = new Date(now - 86400000L * 7); // 7天前开始生效
             Date endDate = new Date(now + 30L * 365L * 86400000L); // 有效期 30 年
@@ -248,7 +249,6 @@ public class ApkSignerUtil {
 
             X500Name subjectAndIssuer = new X500Name("CN=Android Debug, O=Android, C=US");
 
-            // 使用纯 BouncyCastle 的 X509v3CertificateBuilder (不依赖 Jca 类，避免 Provider 冲突)
             org.bouncycastle.asn1.x509.SubjectPublicKeyInfo pubKeyInfo = 
                     org.bouncycastle.asn1.x509.SubjectPublicKeyInfo.getInstance(keyPair.getPublic().getEncoded());
 
@@ -261,22 +261,20 @@ public class ApkSignerUtil {
                     pubKeyInfo
             );
 
-            // 必须添加 KeyUsage 权限扩展，否则 apksig 会拒绝签名
+            // 必须添加 KeyUsage 权限扩展
             KeyUsage keyUsage = new KeyUsage(KeyUsage.digitalSignature | KeyUsage.keyEncipherment);
-            certBuilder.addExtension(org.bouncycastle.asn1.x509.Extension.keyUsage, true, keyUsage);
+            certBuilder.addExtension(Extension.keyUsage, true, keyUsage);
 
-            // 使用前面定义的原生 ContentSigner（完全调用 Android 系统 Signature.getInstance("SHA256withRSA")）
             ContentSigner contentSigner = new StandardRsaContentSigner(keyPair.getPrivate());
-
             X509CertificateHolder certHolder = certBuilder.build(contentSigner);
 
-            // 【关键修复】使用 Android 系统内置的 CertificateFactory ("X.509") 转码，彻底杜绝 X.509 not found 报错
             byte[] certBytes = certHolder.getEncoded();
             CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
             X509Certificate cert = (X509Certificate) certFactory.generateCertificate(new ByteArrayInputStream(certBytes));
 
-            log("3/3: 正在创建 PKCS12 格式的 Keystore 并持久化保存...");
-            KeyStore keyStore = KeyStore.getInstance("PKCS12");
+            log("3/3: 正在创建 BKS 格式的 Keystore 并持久化保存...");
+            // 【关键修改】使用 BKS 格式，并绑定 bcProvider 实例，彻底规避 PKCS12 在部分系统上找不到的问题
+            KeyStore keyStore = KeyStore.getInstance("BKS", bcProvider);
             keyStore.load(null, null);
             keyStore.setKeyEntry(KEY_ALIAS, keyPair.getPrivate(), KEY_PASSWORD, new java.security.cert.Certificate[]{cert});
 
@@ -285,11 +283,11 @@ public class ApkSignerUtil {
                 keyStore.store(fos, KEY_PASSWORD);
             }
 
-            log("Keystore 动态生成成功！保存路径: " + keystoreFile.getAbsolutePath());
+            log("BKS Keystore 动态生成成功！保存路径: " + keystoreFile.getAbsolutePath());
             return true;
 
         } catch (Exception e) {
-            log("动态生成 Keystore 失败: " + e.getMessage());
+            log("动态生成 BKS Keystore 失败: " + e.getMessage());
             e.printStackTrace();
             if (keystoreFile.exists()) {
                 keystoreFile.delete();
@@ -299,8 +297,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 原生轻量级 ContentSigner 实现类：
-     * 完全依赖 Android 系统内置的 Signature.getInstance("SHA256withRSA")
+     * 原生轻量级 ContentSigner 实现类
      */
     private static class StandardRsaContentSigner implements ContentSigner {
         private final PrivateKey privateKey;
