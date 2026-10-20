@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rcgen = { version = "0.13", features = ["rsa"] }
+rcgen = "0.14"
+p12-keystore = "0.3"
 time = "0.3"
+
 
