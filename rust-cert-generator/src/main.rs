@@ -1,9 +1,10 @@
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, KeyUsagePurpose, ExtendedKeyUsagePurpose};
-use p12_keystore::{KeyStore, KeyStoreEntry, PrivateKeyChain};
+use p12_keystore::{KeyStore, KeyStoreEntry, PrivateKeyChain, PrivateKey};
 use time::{OffsetDateTime, Duration};
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::convert::TryInto;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. 获取传入的输出目录参数，默认为当前目录
@@ -32,19 +33,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ExtendedKeyUsagePurpose::CodeSigning,
     ];
 
-    // 3. 生成自签名证书和密钥对
+    // 3. 生成自签名证书和密钥对 (rcgen 0.14 API)
     let key_pair = KeyPair::generate()?;
     let cert = params.self_signed(&key_pair)?;
 
     // 4. 构建 PKCS#12 密钥库
     let mut keystore = KeyStore::new();
-    let mut chain = PrivateKeyChain::new(key_pair.serialize_der());
-    chain.add_certificate(cert.der().to_vec());
     
-    let friendly_name = "autosign_alias".to_string();
-    keystore.add_entry(friendly_name, KeyStoreEntry::PrivateKeyChain(chain));
+    let local_key_id = b"autosign_id".to_vec();
+    
+    // 将 rcgen 生成的私钥 DER 转换为 p12_keystore 的 PrivateKey 类型
+    let private_key: PrivateKey = key_pair.serialize_der().as_slice().try_into()?;
+    
+    // 证书链列表
+    let certs = vec![cert.der().to_vec()];
 
-    // 5. 导出为 .p12 文件（固定密码为 changeit，与原 Java 保持一致）
+    // 构造 PrivateKeyChain
+    let chain = PrivateKeyChain::new(local_key_id, private_key, certs);
+    
+    // add_entry 的别名参数传入 &str 字符串切片
+    keystore.add_entry("autosign_alias", KeyStoreEntry::PrivateKeyChain(chain));
+
+    // 5. 导出为 .p12 文件（固定密码为 changeit，与 Java 层保持一致）
     let p12_password = "changeit";
     let p12_bytes = keystore.writer(p12_password).write()?;
     
