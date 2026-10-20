@@ -1,5 +1,6 @@
-use rcgen::{CertificateParams, DnType, KeyPair, PKCS_RSA_SHA256};
-use time::{Duration, OffsetDateTime};
+use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, KeyUsagePurpose, ExtendedKeyUsagePurpose};
+use p12-keystore::{KeyStore, KeyStoreEntry, PrivateKeyChain};
+use time::{OffsetDateTime, Duration};
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -10,29 +11,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = if args.len() > 1 { &args[1] } else { "." };
     fs::create_dir_all(out_dir)?;
 
-    // 2. 配置自签名证书参数（30年有效期，CN=AutoSign）
+    // 2. 配置证书参数
     let mut params = CertificateParams::default();
-    params.distinguished_name.push(DnType::CommonName, "AutoSign");
-    params.distinguished_name.push(DnType::OrganizationName, "AutoSign");
-    params.distinguished_name.push(DnType::OrganizationalUnitName, "Dev");
-    params.distinguished_name.push(DnType::CountryName, "CN");
+    
+    let mut dn = DistinguishedName::new();
+    dn.push(DnType::CommonName, "AutoSign");
+    dn.push(DnType::OrganizationName, "AutoSign");
+    dn.push(DnType::OrganizationalUnitName, "Dev");
+    dn.push(DnType::CountryName, "CN");
+    params.distinguished_name = dn;
 
-    let not_before = OffsetDateTime::now_utc() - Duration::days(1);
-    let not_after = not_before + Duration::days(10950); // 约30年
-    params.not_before = not_before;
-    params.not_after = not_after;
+    // 有效期 30 年 (10950天)
+    params.not_before = OffsetDateTime::now_utc() - Duration::hours(1);
+    params.not_after = OffsetDateTime::now_utc() + Duration::days(10950);
 
-    // 3. 生成 RSA 2048 密钥对并签发自签名证书 (rcgen 0.13 新 API)
-    let key_pair = KeyPair::generate_for(&PKCS_RSA_SHA256)?;
+    params.key_usages = vec![
+        KeyUsagePurpose::DigitalSignature,
+    ];
+    params.extended_key_usages = vec![
+        ExtendedKeyUsagePurpose::CodeSigning,
+    ];
+
+    // 3. 生成自签名证书和密钥对
+    let key_pair = KeyPair::generate()?;
     let cert = params.self_signed(&key_pair)?;
 
-    // 4. 导出为标准 DER 格式文件
-    let key_path = Path::new(out_dir).join("private_key.der");
-    let cert_path = Path::new(out_dir).join("cert.der");
+    // 4. 构建 PKCS#12 密钥库
+    let mut keystore = KeyStore::new();
+    let mut chain = PrivateKeyChain::new(key_pair.serialize_der());
+    chain.add_certificate(cert.der().to_vec());
+    
+    let friendly_name = "autosign_alias".to_string();
+    keystore.add_entry(friendly_name, KeyStoreEntry::PrivateKeyChain(chain));
 
-    fs::write(&key_path, key_pair.serialize_der())?;
-    fs::write(&cert_path, cert.der())?;
+    // 5. 导出为 .p12 文件（固定密码为 changeit，与原 Java 保持一致）
+    let p12_password = "changeit";
+    let p12_bytes = keystore.writer(p12_password).write()?;
+    
+    let p12_path = Path::new(out_dir).join("autosign.p12");
+    fs::write(&p12_path, p12_bytes)?;
+    
+    println!("✅ 成功生成 P12 签名证书: {}", p12_path.display());
 
-    println!("Successfully generated DER private key and certificate in {}", out_dir);
     Ok(())
 }
