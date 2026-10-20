@@ -139,9 +139,13 @@ public class ApkSignerUtil {
 
         } catch (Exception e) {
             log("❌ 签名异常: " + e.getMessage());
+            if (e.getCause() != null) {
+                log("❌ 异常原因 (Cause): " + e.getCause().getMessage());
+            }
             Log.e(TAG, "签名详细错误", e);
             return false;
         }
+
     }
 
     /**
