@@ -46,8 +46,6 @@ fun ResignScreen(navController: NavController) {
     val apkPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { apkUri = it }
     val ksPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { ksUri = it }
     
-    val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.android.package-archive")) { outUri: Uri? ->
-    
     // 🆕 修改 saver 回调，将 try-catch 中的信息写入日志
     val saver = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.android.package-archive")) { outUri: Uri? ->
         if (apkUri != null && ksUri != null && outUri != null) {
