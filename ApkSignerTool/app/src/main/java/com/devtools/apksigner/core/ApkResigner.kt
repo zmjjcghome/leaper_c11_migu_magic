@@ -6,7 +6,6 @@ import java.io.FileInputStream
 import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
-
 // core/ApkResigner.kt
 object ApkResigner {
     fun resign(
@@ -20,14 +19,17 @@ object ApkResigner {
             val ks = KeyStore.getInstance("PKCS12")
             FileInputStream(keystoreFile).use { ks.load(it, password) }
             
-            // ⚠️ 关键检查点：验证别名和密码是否正确
             if (!ks.containsAlias(alias)) {
-                throw IllegalArgumentException("Keystore does not contain alias: $alias. Available aliases: ${ks.aliases().toList()}")
+                throw IllegalArgumentException(
+                    "Keystore does not contain alias: $alias. Available: ${ks.aliases().toList()}"
+                )
             }
             
             val key = ks.getKey(alias, password)
             if (key !is PrivateKey) {
-                throw IllegalArgumentException("Entry '$alias' is not a private key (type: ${key?.javaClass?.name}). It might be a trustedCertEntry instead of a privateKeyEntry.")
+                throw IllegalArgumentException(
+                    "Entry '$alias' is not a private key (type: ${key?.javaClass?.name})"
+                )
             }
             
             val cert = ks.getCertificate(alias) as X509Certificate
@@ -42,12 +44,17 @@ object ApkResigner {
                 .build()
                 .sign()
                 
-        } catch (e: Exception) {
-            // 🔥 必须打印 cause，这才是真正的错误原因
-            val rootCause = generateSequence(e) { it.cause }.lastOrNull()
+        } catch (e: Throwable) { // 🔧 改为捕获 Throwable 而非 Exception
+            // 安全地获取最底层的根因（类型为 Throwable）
+            val rootCause: Throwable = generateSequence(e) { it.cause }.lastOrNull() ?: e
+            
             System.err.println("=== APK Sign Root Cause ===")
-            rootCause?.printStackTrace()
-            throw e // 重新抛出，保持原有行为
+            System.err.println("Type: ${rootCause.javaClass.name}")
+            System.err.println("Message: ${rootCause.message}")
+            rootCause.printStackTrace(System.err)
+            
+            // 如果原始异常是 Exception，则原样抛出；如果是 Error，也向上传播
+            throw e
         }
     }
 }
