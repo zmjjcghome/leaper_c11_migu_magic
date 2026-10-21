@@ -2,12 +2,11 @@ package com.leapermagic.magic;
 
 import android.content.ContentResolver;
 import android.content.Context;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Environment;
-import android.util.Log;
-import android.database.Cursor;
-import android.os.Environment;
 import android.provider.OpenableColumns;
+import android.util.Log;
 
 import com.android.apksig.ApkSigner;
 import com.android.apksig.ApkVerifier;
@@ -44,8 +43,8 @@ public class ApkSignerUtil {
 
     private static final String TAG = "ApkSignerUtil";
     
-    // 密钥库配置
-    private static final String KEYSTORE_FILENAME = "autosign.keystore";
+    // 密钥库配置（已更换为 PKCS12 格式 .p12）
+    private static final String KEYSTORE_FILENAME = "autosign.p12";
     private static final String KEYSTORE_PASSWORD = "changeit";
     private static final String KEY_ALIAS = "autosign_alias";
     private static final String KEY_PASSWORD = "changeit";
@@ -60,11 +59,10 @@ public class ApkSignerUtil {
 
     private SignLogCallback logCallback;
     
-    // 提前持有BC Provider的单例，避免重复注册
+    // 提前持有BC Provider的单例，用于生成证书时的加密签名
     private static final BouncyCastleProvider BC_PROVIDER = new BouncyCastleProvider();
 
     static {
-        // 先移除重复的BC Provider，再重新注册，确保它在Provider列表中是唯一且可用的
         Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME);
         Security.addProvider(BC_PROVIDER);
     }
@@ -93,7 +91,7 @@ public class ApkSignerUtil {
     public boolean resignApk(ContentResolver contentResolver, Uri apkUri, File outputFile) {
         log("========== 签名开始 ==========");
         try {
-            // 1. 加载/自动生成标准BKS密钥库与签名证书
+            // 1. 加载/自动生成标准 PKCS12 密钥库与签名证书
             KeyStore keyStore = getOrCreateKeyStore();
             PrivateKey privateKey = (PrivateKey) keyStore.getKey(KEY_ALIAS, KEY_PASSWORD.toCharArray());
             Certificate[] certChain = keyStore.getCertificateChain(KEY_ALIAS);
@@ -105,7 +103,6 @@ public class ApkSignerUtil {
             X509Certificate cert = (X509Certificate) certChain[0];
             log("使用密钥别名: " + KEY_ALIAS);
             log("证书主体: " + cert.getSubjectDN());
-            log("证书有效期至: " + cert.getNotAfter());
 
             // 2. 准备输出目录与临时输入文件
             if (outputFile.getParentFile() != null && !outputFile.getParentFile().exists()) {
@@ -177,11 +174,12 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 获取或创建标准BKS密钥库，支持自动生成自签名证书
+     * 获取或创建标准 PKCS12 密钥库
      */
     public synchronized KeyStore getOrCreateKeyStore() throws Exception {
         File ksFile = new File(context.getFilesDir(), KEYSTORE_FILENAME);
-        KeyStore keyStore = KeyStore.getInstance("BKS", BC_PROVIDER);
+        // 使用标准的 PKCS12 密钥库类型
+        KeyStore keyStore = KeyStore.getInstance("PKCS12");
 
         if (ksFile.exists()) {
             try (FileInputStream fis = new FileInputStream(ksFile)) {
@@ -191,10 +189,10 @@ public class ApkSignerUtil {
                 log("密钥库存在但别名缺失，重新生成密钥证书");
                 generateNewKey(keyStore, ksFile);
             } else {
-                log("加载现有BKS密钥库成功");
+                log("加载现有 PKCS12 密钥库成功");
             }
         } else {
-            log("创建新的 BKS 密钥库");
+            log("创建新的 PKCS12 密钥库");
             keyStore.load(null, null);
             generateNewKey(keyStore, ksFile);
         }
@@ -211,10 +209,10 @@ public class ApkSignerUtil {
             if (ksFile.exists()) {
                 ksFile.delete();
             }
-            KeyStore keyStore = KeyStore.getInstance("BKS", BC_PROVIDER);
+            KeyStore keyStore = KeyStore.getInstance("PKCS12");
             keyStore.load(null, null);
             generateNewKey(keyStore, ksFile);
-            log("✅ 成功重新生成签名证书与密钥库");
+            log("✅ 成功重新生成 PKCS12 签名证书与密钥库");
             return true;
         } catch (Exception e) {
             log("❌ 重新生成密钥库失败: " + e.getMessage());
@@ -228,7 +226,7 @@ public class ApkSignerUtil {
      */
     private void generateNewKey(KeyStore keyStore, File ksFile) throws Exception {
         log("正在生成 " + KEY_SIZE + " 位 RSA 密钥对...");
-        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA", BC_PROVIDER);
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
         kpg.initialize(KEY_SIZE);
         KeyPair kp = kpg.generateKeyPair();
 
@@ -253,7 +251,7 @@ public class ApkSignerUtil {
     private X509Certificate generateSelfSignedCert(KeyPair kp) throws Exception {
         X500Name subject = new X500Name("CN=AutoSigner, OU=Development, O=LeaperMagic, C=CN");
         BigInteger serial = BigInteger.valueOf(System.currentTimeMillis());
-        Date notBefore = new Date(System.currentTimeMillis() - 86400000L); // 提前一天防止时差问题
+        Date notBefore = new Date(System.currentTimeMillis() - 86400000L); 
         Date notAfter = new Date(System.currentTimeMillis() + (long) VALIDITY_DAYS * 86400000L);
         
         X509v3CertificateBuilder certBuilder = 
@@ -273,7 +271,7 @@ public class ApkSignerUtil {
     }
 
     /**
-     * 获取当前签名证书详细信息（可用于UI展示）
+     * 获取当前签名证书详细信息
      */
     public String getCertificateDetails() {
         try {
@@ -337,22 +335,48 @@ public class ApkSignerUtil {
     
     /**
      * 生成签名后APK的输出路径
+     * 优先尝试保存在原文件的同级目录下；若受权限限制无法获取，则降级保存在系统的下载目录中
      */
     public static File getOutputFile(Context context, Uri sourceUri) {
         String fileName = "signed_app.apk";
-        if (sourceUri != null && sourceUri.getPath() != null) {
-            String path = sourceUri.getPath();
-            int lastSlash = path.lastIndexOf('/');
-            if (lastSlash != -1) {
-                String name = path.substring(lastSlash + 1);
-                if (name.endsWith(".apk")) {
-                    fileName = name.replace(".apk", "_signed.apk");
-                } else {
-                    fileName = name + "_signed.apk";
+        File parentDir = null;
+
+        if (sourceUri != null) {
+            String name = getFileName(context, sourceUri);
+            if (name != null && !name.isEmpty()) {
+                fileName = insertResigned(name);
+            }
+
+            // 尝试从 Uri 中直接解析出原文件所在的父目录
+            if (ContentResolver.SCHEME_FILE.equals(sourceUri.getScheme())) {
+                String path = sourceUri.getPath();
+                if (path != null) {
+                    File file = new File(path);
+                    parentDir = file.getParentFile();
                 }
+            } else if (ContentResolver.SCHEME_CONTENT.equals(sourceUri.getScheme())) {
+                // 尝试通过 MediaStore 查询原文件绝对路径
+                try (Cursor c = context.getContentResolver().query(sourceUri, new String[]{android.provider.MediaStore.Images.Media.DATA}, null, null, null)) {
+                    if (c != null && c.moveToFirst()) {
+                        int idx = c.getColumnIndex(android.provider.MediaStore.Images.Media.DATA);
+                        if (idx >= 0) {
+                            String dataPath = c.getString(idx);
+                            if (dataPath != null) {
+                                File file = new File(dataPath);
+                                parentDir = file.getParentFile();
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {}
             }
         }
-        
+
+        // 如果成功获取到原文件同级目录且可写，则优先使用
+        if (parentDir != null && parentDir.exists() && parentDir.canWrite()) {
+            return new File(parentDir, fileName);
+        }
+
+        // 降级目录：外部存储下载目录或应用私有目录下的 SignedApks 文件夹
         File dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
         if (dir == null) dir = context.getFilesDir();
         File outputDir = new File(dir, "SignedApks");
@@ -362,20 +386,7 @@ public class ApkSignerUtil {
     }
 
     public static File generateOutputFile(Context context, Uri uri) {
-        if (uri == null) return null;
-
-        String name = getFileName(context, uri);
-        if (name == null) name = "unknown.apk";
-        
-        File outputDir;
-        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
-            outputDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "SignedApk");
-        } else {
-            outputDir = new File(context.getFilesDir(), "SignedApk");
-        }
-        
-        if (!outputDir.exists()) outputDir.mkdirs();
-        return new File(outputDir, insertResigned(name));
+        return getOutputFile(context, uri);
     }
 
     private static String getFileName(Context ctx, Uri uri) {
