@@ -1,0 +1,72 @@
+name: build kotlin
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'ApkSignerTool/**'
+  workflow_dispatch:            # 允许手动触发
+
+jobs:
+  build-and-release:
+    name: Build & Sign APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+
+#      - name: Setup Gradle
+#        uses: gradle/actions/setup-gradle@v6
+
+#       - name: Generate Gradle Wrapper
+#        run: gradle wrapper --gradle-version 8.7
+
+      # 解码 Base64 证书 (避坑：使用 --decode)
+      - name: Decode Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 --decode > app/release-key.jks
+
+      - name: Make Gradlew Executable
+        run: |
+          chmod +x ./gradlew
+          ls -l
+          rm -rf app
+          rm -rf gradle
+          rm -rf build.gradle
+          rm -rf gradle.properties
+          rm -rf settings.gradle
+          mv ApkSignerTool/* ./
+
+      # 注入环境变量并构建
+      - name: Build Release APK
+        env:
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --no-daemon
+      
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-release.apk
+          path: app/build/outputs/apk/release/app-release.apk
+      
+      - name: Upload firmware to wormhole.app
+        run: |
+          ls -l
+
+          cargo install --git https://github.com/trumank/wormhole-cli.git
+          wormhole-cli upload app/build/outputs/apk/release/app-release.apk 2>&1 | tee wormhole.app.log
+          echo "::warning file=wormhole.app::$(cat wormhole.app.log | grep https://wormhole.app)"
+          
