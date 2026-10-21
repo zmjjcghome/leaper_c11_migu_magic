@@ -62,14 +62,16 @@ android {
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
-    
-    // BouncyCastle: 生成标准证书 (使用 jdk18on 避免与 Android 系统自带老版本冲突)
-    implementation("org.bouncycastle:bcprov-jdk18on:1.78")
-    implementation("org.bouncycastle:bcpkix-jdk18on:1.78")
-    
-    // apksig: Google 官方 APK 签名库
+
+    // 🔧 降级到 jdk15on，解决 Failed to encode signature block
+    implementation("org.bouncycastle:bcprov-jdk15on:1.70")
+    implementation("org.bouncycastle:bcpkix-jdk15on:1.70")
+
+    // apksig 保持不变
     implementation("com.android.tools.build:apksig:8.2.2")
-    
+
+
+
     // Compose UI
     implementation(platform("androidx.compose:compose-bom:2024.02.00"))
     implementation("androidx.activity:activity-compose:1.8.2")
