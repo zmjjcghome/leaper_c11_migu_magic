@@ -1,29 +1,49 @@
+
 # ============================================================
-# apksig 核心保留规则（必须）
-# apksig 通过反射实例化 ASN.1 编码器、签名算法工厂等内部类
+# 1. apksig 核心保留（签名引擎、ASN.1 编码器、ZIP 处理）
+# apksig 内部通过字符串拼接类名进行反射实例化
 # ============================================================
 -keep class com.android.apksig.** { *; }
--keepclassmembers class com.android.apksig.** { *; }
+-keepclassmembers class com.android.apksig.** {
+    <init>(...);
+    public static ** valueOf(...);
+    public static ** of(...);
+}
 -dontwarn com.android.apksig.**
 
 # ============================================================
-# BouncyCastle 完整保留规则（必须）
-# BC 的 ASN.1/PKCS#7 编码器全部通过反射和 Class.forName 加载
-# R8 无法静态分析这些调用，必须全量保留
+# 2. BouncyCastle 精准保留（仅保留反射入口，允许混淆内部实现）
+# BC 的 ASN.1/PKCS7/CMS 编码器全部通过 Class.forName 加载
 # ============================================================
--keep class org.bouncycastle.** { *; }
--keepclassmembers class org.bouncycastle.** { *; }
+-keep class org.bouncycastle.asn1.** { *; }
+-keep class org.bouncycastle.crypto.** { *; }
+-keep class org.bouncycastle.jcajce.** { *; }
+-keep class org.bouncycastle.jce.** { *; }
+-keep class org.bouncycastle.operator.** { *; }
+-keep class org.bouncycastle.pkcs.** { *; }
+-keep class org.bouncycastle.cert.** { *; }
+-keep class org.bouncycastle.openssl.** { *; }
+-keep class org.bouncycastle.util.** { *; }
+
+# BC Provider 注册机制必须完整保留
+-keep class * extends java.security.Provider { *; }
+-keepclassmembers class * extends java.security.Provider {
+    <init>(...);
+}
+
 -dontwarn org.bouncycastle.**
 
 # ============================================================
-# Java Security / Crypto API 保留（关键）
-# Signature、MessageDigest、KeyFactory 等通过 Provider 机制动态加载
+# 3. Java Security / Crypto API 保留
+# Signature、MessageDigest、KeyFactory 等通过 SPI 动态加载
 # ============================================================
--keep class java.security.** { *; }
--keepclassmembers class java.security.** { *; }
--keep class javax.crypto.** { *; }
--keepclassmembers class javax.crypto.** { *; }
+-keep class java.security.spec.** { *; }
+-keep class javax.crypto.spec.** { *; }
+-keepclassmembers class * implements java.security.Key {
+    !private <fields>;
+    !private <methods>;
+}
 
-# 保留所有 Security Provider 注册信息
--keepattributes Signature, InnerClasses, EnclosingMethod
--keepclassmembers class * implements java.security.Provider { *; }
+# 保留注解和泛型信息（apksig 部分版本依赖）
+-keepattributes Signature, InnerClasses, EnclosingMethod, RuntimeVisibleAnnotations
+
