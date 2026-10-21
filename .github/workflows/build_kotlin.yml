@@ -25,6 +25,17 @@ jobs:
 #        uses: gradle/actions/setup-gradle@v3
 
 
+      - name: Make source ready
+        run: |
+          ls -l
+          rm -rf app
+          rm -rf gradle
+          rm -rf build.gradle
+          rm -rf gradle.properties
+          rm -rf settings.gradle
+          mv ApkSignerTool/* ./
+          ls -l
+          
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6       
       
@@ -41,14 +52,7 @@ jobs:
         run: |
           ls -l
           chmod +x ./gradlew
-          ls -l
-          rm -rf app
-          rm -rf gradle
-          rm -rf build.gradle
-          rm -rf gradle.properties
-          rm -rf settings.gradle
-          mv ApkSignerTool/* ./
-
+          
       # 注入环境变量并构建
       - name: Build Release APK
         env:
