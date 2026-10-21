@@ -5,6 +5,9 @@ import android.content.Context;
 import android.net.Uri;
 import android.os.Environment;
 import android.util.Log;
+import android.database.Cursor;
+import android.os.Environment;
+import android.provider.OpenableColumns;
 
 import com.android.apksig.ApkSigner;
 import com.android.apksig.ApkVerifier;
