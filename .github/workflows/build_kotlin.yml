@@ -31,7 +31,7 @@ jobs:
           rm -rf app
           rm -rf gradle
           rm -rf build.gradle
-          rm -rf gradle.properties
+          #rm -rf gradle.properties
           rm -rf settings.gradle
           mv ApkSignerTool/* ./
           ls -l
