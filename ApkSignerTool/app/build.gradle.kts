@@ -44,6 +44,20 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.8"
     }
+
+    packaging {
+        resources {
+            // 排除 BouncyCastle 多版本 JAR 中冲突的 OSGI 清单文件
+            excludes += setOf(
+                "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+                "META-INF/versions/11/OSGI-INF/MANIFEST.MF", // 预防性排除 Java 11 版本
+                "META-INF/DEPENDENCIES",                    // 预防其他常见 META-INF 冲突
+                "META-INF/LICENSE.md",
+                "META-INF/NOTICE.md"
+            )
+        }
+    }
+
 }
 
 dependencies {
