@@ -357,4 +357,51 @@ public class ApkSignerUtil {
         
         return new File(outputDir, fileName);
     }
+
+    public static File generateOutputFile(Context context, Uri uri) {
+        if (uri == null) return null;
+
+        String name = getFileName(context, uri);
+        if (name == null) name = "unknown.apk";
+        
+        File outputDir;
+        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
+            outputDir = new File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "SignedApk");
+        } else {
+            outputDir = new File(context.getFilesDir(), "SignedApk");
+        }
+        
+        if (!outputDir.exists()) outputDir.mkdirs();
+        return new File(outputDir, insertResigned(name));
+    }
+
+    private static String getFileName(Context ctx, Uri uri) {
+        String name = null;
+        if (ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+            try (Cursor c = ctx.getContentResolver().query(uri, null, null, null, null)) {
+                if (c != null && c.moveToFirst()) {
+                    int idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    if (idx >= 0) name = c.getString(idx);
+                }
+            } catch (Exception ignored) {}
+        }
+        if (name == null && uri.getPath() != null) {
+            String path = uri.getPath();
+            int lastSlash = path.lastIndexOf('/');
+            if (lastSlash != -1) {
+                name = path.substring(lastSlash + 1);
+            } else {
+                name = path;
+            }
+        }
+        return (name != null && !name.isEmpty()) ? name : "unsigned.apk";
+    }
+
+    private static String insertResigned(String name) {
+        int dot = name.lastIndexOf('.');
+        if (dot > 0) {
+            return name.substring(0, dot) + "_resigned" + name.substring(dot);
+        }
+        return name + "_resigned.apk";
+    }
 }
