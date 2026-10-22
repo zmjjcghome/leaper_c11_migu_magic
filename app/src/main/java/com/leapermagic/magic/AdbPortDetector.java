@@ -8,7 +8,6 @@ import java.util.*;
  * 支持多种检测策略
  */
 public class AdbPortDetector {
-
     /**
      * 综合检测：按优先级依次尝试所有策略
      * @return adbd 端口号，-1 表示未找到
@@ -19,14 +18,14 @@ public class AdbPortDetector {
         // 策略1：如果用户指定了端口，先直接尝试
         if (preferredPort > 0) {
             if (callback != null) callback.onLog("检查指定端口: " + preferredPort);
-            if (AdbClient.checkAdbPort("127.0.0.1", preferredPort, 3000)) {
+            if (AdbClient.checkAdbPort("127.0.0.1", preferredPort, 500)) {
                 return preferredPort;
             }
         }
 
         // 策略2：检查常见端口 5555
         if (callback != null) callback.onLog("检查端口 5555...");
-        if (AdbClient.checkAdbPort("127.0.0.1", 5555, 3000)) {
+        if (AdbClient.checkAdbPort("127.0.0.1", 5555, 500)) {
             return 5555;
         }
 
@@ -46,7 +45,14 @@ public class AdbPortDetector {
             return port;
         }
 
-        // 策略5：扫描 35000-50000 范围 (Android 11+ 无线调试常用范围)
+        // 策略5：【核心优化】检查 adbd 进程是否存在。若未运行说明未开网络调试，直接跳过大范围扫描，避免卡死
+        int adbdPid = findAdbdPid();
+        if (adbdPid <= 0) {
+            if (callback != null) callback.onLog("adbd 进程未运行，跳过端口范围扫描");
+            return -1;
+        }
+
+        // 策略6：扫描 35000-50000 范围 (Android 11+ 无线调试常用范围)
         if (callback != null) callback.onLog("扫描端口范围 5000-5999 35000-50000...");
         port = scanRange(5000, 5999, callback);
         if (port > 0) {
@@ -201,10 +207,11 @@ public class AdbPortDetector {
     /**
      * 策略: 在指定范围内并发扫描
      */
+    // 别忘了在 scanRange 中将 checkAdbPort 的超时时间缩短至 300ms 左右
     public static int scanRange(int start, int end, Callback callback) {
         java.util.concurrent.atomic.AtomicInteger result =
             new java.util.concurrent.atomic.AtomicInteger(-1);
-        int threads = Math.min(30, (end - start) / 50 + 1);
+        int threads = Math.min(15, (end - start) / 50 + 1);
         java.util.concurrent.ExecutorService executor =
             java.util.concurrent.Executors.newFixedThreadPool(threads);
 
@@ -216,7 +223,8 @@ public class AdbPortDetector {
                 final int p = port;
                 executor.submit(() -> {
                     if (result.get() != -1) return;
-                    if (AdbClient.checkAdbPort("127.0.0.1", p, 3000)) {
+                    // 超时缩短为 300ms，加速本地快速失败
+                    if (AdbClient.checkAdbPort("127.0.0.1", p, 300)) {
                         result.compareAndSet(-1, p);
                         if (callback != null) {
                             callback.onLog("扫描命中端口: " + p);
@@ -224,12 +232,11 @@ public class AdbPortDetector {
                     }
                 });
             }
-            // 每批等一小段时间
-            try { Thread.sleep(100); } catch (InterruptedException e) { break; }
+            try { Thread.sleep(50); } catch (InterruptedException e) { break; }
         }
 
         executor.shutdown();
-        try { executor.awaitTermination(10, java.util.concurrent.TimeUnit.SECONDS); }
+        try { executor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS); }
         catch (InterruptedException ignored) {}
 
         return result.get();
