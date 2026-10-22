@@ -33,6 +33,7 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -90,6 +91,9 @@ public class MainActivity extends AppCompatActivity {
     private final Handler saveHandler = new Handler(Looper.getMainLooper());
     private final Runnable saveRunnable = () -> savePath(etTargetPath.getText().toString().trim());
     
+
+    // 字段声明处添加
+    private final AtomicBoolean isInitializingAdb = new AtomicBoolean(false);
 
     // ==================== 权限相关 ====================
     
@@ -352,7 +356,7 @@ public class MainActivity extends AppCompatActivity {
         checkAllPermissions();
         setupLogListener();
         
-        //initAdbConnection();
+        initAdbConnection();
     }
     // ==================== 权限管理 ====================
     
@@ -581,33 +585,57 @@ public class MainActivity extends AppCompatActivity {
             }
         //}).start();
     }*/
-    private void initAdbConnection() {
-        new Thread(() -> {
-            if (adbConnection == null) {
-                appendLog("========== 开始检测 adbd ==========");
-        
-                // 自动检测端口
-                adbdPort = AdbPortDetector.detect(-1, msg -> {
-                    runOnUiThread(() -> appendLog("[检测] " + msg));
-                });
-        
-                if (adbdPort > 0) {
-                    appendLog("[成功] 找到 adbd 端口: " + adbdPort);
-                    // 建立持久连接
-                    AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
     
-                    if (result.success) {
-                        adbConnection = result.connection;
-                        appendLog("连接成功: " + result.message);
-                        appendLog("[成功] 已连接到 adbd (端口 " + adbdPort + "):" + result.message);
+    /**
+     * 初始化：自动检测 adbd 端口并建立连接
+     */
+    private void initAdbConnection() {
+        // 防止并发重复初始化
+        if (!isInitializingAdb.compareAndSet(false, true)) {
+            return;
+        }
+    
+        new Thread(() -> {
+            try {
+                if (adbConnection == null) {
+                    // 1. 快速检查系统是否开启了 ADB 调试
+                    try {
+                        int adbEnabled = Settings.Global.getInt(getContentResolver(), Settings.Global.ADB_ENABLED, 0);
+                        if (adbEnabled != 1) {
+                            runOnUiThread(() -> {
+                                appendLog("[提示] 系统未开启 ADB 调试，请在开发者选项中开启 USB/无线调试");
+                            });
+                            return;
+                        }
+                    } catch (Exception ignored) {}
+    
+                    appendLog("========== 开始检测 adbd ==========");
+            
+                    // 自动检测端口
+                    adbdPort = AdbPortDetector.detect(-1, msg -> {
+                        runOnUiThread(() -> appendLog("[检测] " + msg));
+                    });
+            
+                    if (adbdPort > 0) {
+                        appendLog("[成功] 找到 adbd 端口: " + adbdPort);
+                        // 建立持久连接
+                        AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
+        
+                        if (result.success) {
+                            adbConnection = result.connection;
+                            appendLog("连接成功: " + result.message);
+                            appendLog("[成功] 已连接到 adbd (端口 " + adbdPort + "):" + result.message);
+                        } else {
+                            appendLog("[失败] 连接 adbd 失败: " + result.message);
+                        }
                     } else {
-                        appendLog("[失败] 连接 adbd 失败: " + result.message);
+                        appendLog("[失败] 未找到 adbd 监听端口");
+                        appendLog("[提示] 请在设置中开启无线调试 (Android 11+)");
+                        appendLog("[提示] 或通过 USB 执行: adb tcpip 5555");
                     }
-                } else {
-                    appendLog("[失败] 未找到 adbd 监听端口");
-                    appendLog("[提示] 请在设置中开启无线调试 (Android 11+)");
-                    appendLog("[提示] 或通过 USB 执行: adb tcpip 5555");
                 }
+            } finally {
+                isInitializingAdb.set(false);
             }
         }).start();
     }
