@@ -605,7 +605,7 @@ public class MainActivity extends AppCompatActivity {
                             runOnUiThread(() -> {
                                 appendLog("[提示] 系统未开启 ADB 调试，请在开发者选项中开启 USB/无线调试");
                             });
-                            return;
+                            //return;
                         }
                     } catch (Exception ignored) {}
     
