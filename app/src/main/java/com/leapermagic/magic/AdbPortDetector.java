@@ -49,7 +49,7 @@ public class AdbPortDetector {
         int adbdPid = findAdbdPid();
         if (adbdPid <= 0) {
             if (callback != null) callback.onLog("adbd 进程未运行，跳过端口范围扫描");
-            return -1;
+            //return -1;
         }
 
         // 策略6：扫描 35000-50000 范围 (Android 11+ 无线调试常用范围)
@@ -223,8 +223,8 @@ public class AdbPortDetector {
                 final int p = port;
                 executor.submit(() -> {
                     if (result.get() != -1) return;
-                    // 超时缩短为 300ms，加速本地快速失败
-                    if (AdbClient.checkAdbPort("127.0.0.1", p, 300)) {
+                    // 超时缩短为 20ms，加速本地快速失败
+                    if (AdbClient.checkAdbPort("127.0.0.1", p, 20)) {
                         result.compareAndSet(-1, p);
                         if (callback != null) {
                             callback.onLog("扫描命中端口: " + p);
