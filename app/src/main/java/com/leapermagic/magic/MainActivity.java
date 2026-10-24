@@ -641,25 +641,19 @@ public class MainActivity extends AppCompatActivity {
     // ============================================================
     private void appendLog(String msg) {
         uiHandler.post(() -> {
+
             String current = tvLog.getText().toString();
             String timestamp = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
                     .format(new java.util.Date());
-            String newLine = "[" + timestamp + "] " + msg;
-            if (current.isEmpty()) {
-                tvLog.setText(newLine);
-            } else {
-                tvLog.setText(current + "\n" + newLine);
-            }
+            String newLine = "[" + timestamp + "] " + msg + "\n";
+            // 追加新文本后自动滚到底部
+            tvLog.append(newLine);
             tvLog.post(() -> {
-                int scrollAmount = tvLog.getLayout() != null 
-                    ? tvLog.getLayout().getLineTop(tvLog.getLineCount()) - tvLog.getHeight()
-                    : 0;
-                if (scrollAmount > 0) {
-                    tvLog.scrollTo(0, scrollAmount);
-                } else {
-                    tvLog.scrollTo(0, 0);
-                }
+                // 计算滚动总高度：文本总高度 - 控件可视高度，直接定位到最底部
+                int bottomY = tvLog.getLayout().getHeight() - tvLog.getHeight() + tvLog.getPaddingBottom();
+                tvLog.scrollTo(0, bottomY);
             });
+
         });
     }
 
@@ -1051,26 +1045,21 @@ public class MainActivity extends AppCompatActivity {
         // 然后再尝试连接
         //connectToDevice("127.0.0.1", 5555);
         if (adbConnection == null || adbConnection.isClosed()) {
-            // ====== 建立单次 ADB 连接，DEX 和 APK 推送复用此连接 ======
 
-            // 1. 建立或复用 ADB 连接
-            if (adbConnection == null) {
-                appendLog("正在建立 ADB 连接...");
-                AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
-                if (!result.success || result.connection == null) {
-                    uiHandler.post(() -> {
-                        tvStatus.setText("ADB 连接失败: " + result.message);
-                        btnPrepareFiles.setEnabled(true);
-                        Toast.makeText(MainActivity.this, "ADB 连接失败", Toast.LENGTH_LONG).show();
-                    });
-                    appendLog("ADB 连接失败: " + result.message);
-                    return "ADB 连接失败";
-                }
-                adbConnection = result.connection;
-                appendLog("ADB 连接已建立 ✓ | 端口=" + adbdPort + " | 单连接复用模式");
-            } else {
-                appendLog("复用已有 ADB 连接 | 端口=" + adbdPort + " | 单连接复用模式");
+            appendLog("正在建立 ADB 连接...");
+            AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
+            if (!result.success || result.connection == null) {
+                uiHandler.post(() -> {
+                    tvStatus.setText("ADB 连接失败: " + result.message);
+                    btnPrepareFiles.setEnabled(true);
+                    Toast.makeText(MainActivity.this, "ADB 连接失败", Toast.LENGTH_LONG).show();
+                });
+                appendLog("ADB 连接失败: " + result.message);
+                return "ADB 连接失败";
             }
+            adbConnection = result.connection;
+            appendLog("ADB 连接已建立 ✓ | 端口=" + adbdPort + " | 单连接复用模式");
+
 
         }
         // 如果 ADB 连接可用，优先使用（shell UID 权限）
