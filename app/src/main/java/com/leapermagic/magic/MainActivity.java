@@ -1,5 +1,6 @@
 package com.leapermagic.magic;
 
+import android.view.View;
 import android.content.Intent;
 import android.content.Context;
 import android.content.pm.PackageManager;
