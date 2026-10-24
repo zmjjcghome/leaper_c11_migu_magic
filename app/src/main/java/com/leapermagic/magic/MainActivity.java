@@ -1,3 +1,4 @@
+
 package com.leapermagic.magic;
 
 import android.content.Intent;
@@ -44,14 +45,10 @@ public class MainActivity extends AppCompatActivity {
 
     // ====== Shell 绕过安装常量 ======
     private static final String[] DEX_CANDIDATE_PATHS = {
-            "/data/data/com.leapermagic.magic/files/Api64Installer.dex",
             "/data/local/tmp/Api64Installer.dex"
-            //,"/sdcard/Api64Installer.dex"
     };
     private static final String[] APK_CANDIDATE_PATHS = {
-            "/data/data/com.leapermagic.magic/files/install_target.apk",
             "/data/local/tmp/install_target.apk"
-            //,"/sdcard/install_target.apk"
     };
     private static final String INSTALLER_CLASS = "com.lipu.install.Api64Installer";
     /** 当前的 adbd 端口，-1 表示未连接 */
@@ -666,35 +663,55 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        // 确保 ADB 连接已建立
+        if (adbdPort <= 0) {
+            appendLog("ADB 端口未检测到，正在初始化 ADB 连接...");
+            initAdbConnection();
+            // 等待 ADB 初始化完成
+            try {
+                Thread.sleep(3000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (adbdPort <= 0) {
+                uiHandler.post(() -> {
+                    tvStatus.setText("ADB 连接失败，请检查 ADB 调试是否开启");
+                    btnPrepareFiles.setEnabled(true);
+                    Toast.makeText(MainActivity.this, "ADB 连接失败，请检查设备连接", Toast.LENGTH_LONG).show();
+                });
+                return;
+            }
+        }
+
         btnPrepareFiles.setEnabled(false);
-        tvStatus.setText("正在准备文件...");
-        appendLog("========== 开始准备文件 ==========");
+        tvStatus.setText("正在通过 ADB 推送文件...");
+        appendLog("========== 开始通过 ADB push 准备文件 ==========");
 
         new Thread(() -> {
-            // Step 1: 释放 DEX
+            // Step 1: 通过 ADB push 推送 DEX
             actualDexPath = pushDexWithFallback();
             if (actualDexPath == null) {
                 uiHandler.post(() -> {
-                    tvStatus.setText("DEX 释放失败，查看日志");
+                    tvStatus.setText("DEX 推送失败，查看日志");
                     btnPrepareFiles.setEnabled(true);
                 });
                 return;
             }
-            appendLog("DEX 释放成功 → " + actualDexPath);
+            appendLog("DEX 推送成功 → " + actualDexPath);
 
-            // Step 2: 复制 APK
+            // Step 2: 通过 ADB push 推送 APK
             actualApkPath = copyApkWithFallback();
             if (actualApkPath == null) {
                 uiHandler.post(() -> {
-                    tvStatus.setText("APK 复制失败，查看日志");
+                    tvStatus.setText("APK 推送失败，查看日志");
                     btnPrepareFiles.setEnabled(true);
                 });
                 return;
             }
-            appendLog("APK 复制成功 → " + actualApkPath);
+            appendLog("APK 推送成功 → " + actualApkPath);
 
             uiHandler.post(() -> {
-                tvStatus.setText("文件准备完成，可执行安装");
+                tvStatus.setText("文件推送完成，可执行安装");
                 btnPrepareFiles.setEnabled(true);
                 btnExecuteInstall.setEnabled(true);
                 Toast.makeText(MainActivity.this, "文件准备完成", Toast.LENGTH_SHORT).show();
@@ -707,72 +724,72 @@ public class MainActivity extends AppCompatActivity {
      */
     private String pushDexWithFallback() {
         for (String path : DEX_CANDIDATE_PATHS) {
-            appendLog("尝试释放 DEX → " + path);
+            appendLog("尝试通过 ADB push 推送 DEX → " + path);
             if (tryPushDex(path)) {
                 return path;
             }
             appendLog("  ✗ 失败");
         }
-        appendLog("所有 DEX 路径均写入失败！");
+        appendLog("所有 DEX 推送路径均失败！");
         return null;
     }
 
+    /**
+     * 通过 ADB push 将 DEX 文件推送到设备 /data/local/tmp/ 目录
+     */
     private boolean tryPushDex(String destPath) {
+        // 检查 ADB 端口是否已检测
+        if (adbdPort <= 0) {
+            appendLog("  ADB 端口未检测到，无法推送 DEX 文件");
+            return false;
+        }
+
+        // 从 assets 读取 DEX 文件数据
+        byte[] dexData;
         try {
-            File destFile = new File(destPath);
-
-            // 确保父目录存在
-            File parent = destFile.getParentFile();
-            if (parent != null && !parent.exists()) {
-                boolean mkdirResult = parent.mkdirs();
-                appendLog("  mkdirs " + parent.getAbsolutePath() + " → " + mkdirResult);
-            }
-
-            // 检查父目录是否可写
-            if (parent != null && !parent.canWrite()) {
-                appendLog("  父目录不可写: " + parent.getAbsolutePath());
-                return false;
-            }
-
-            // 删除旧文件
-            if (destFile.exists()) {
-                boolean deleted = destFile.delete();
-                appendLog("  删除旧文件 → " + deleted);
-            }
-
-            // 从 assets 读取
             InputStream dexStream = getAssets().open("classes.dex");
             if (dexStream == null) {
                 appendLog("  assets/classes.dex 不存在！");
                 return false;
             }
 
-            int available = dexStream.available();
-            appendLog("  assets/classes.dex 大小: " + available + " bytes");
-
-            // 写入文件
-            try (FileOutputStream fos = new FileOutputStream(destFile)) {
-                byte[] buffer = new byte[8192];
-                int bytesRead, total = 0;
-                while ((bytesRead = dexStream.read(buffer)) != -1) {
-                    fos.write(buffer, 0, bytesRead);
-                    total += bytesRead;
-                }
-                fos.flush();
-                appendLog("  写入 " + total + " bytes");
+            // 读取全部字节
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int bytesRead;
+            while ((bytesRead = dexStream.read(buffer)) != -1) {
+                baos.write(buffer, 0, bytesRead);
             }
+            dexData = baos.toByteArray();
+            baos.close();
             dexStream.close();
+            appendLog("  读取 assets/classes.dex: " + dexData.length + " bytes");
+        } catch (IOException e) {
+            appendLog("  读取 DEX 文件失败: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
 
-            // 设置权限
-            destFile.setReadable(true, false);
-            destFile.setExecutable(true, false);
+        // 通过 ADB push 推送到设备 /data/local/tmp/
+        appendLog("  通过 ADB push 推送 DEX → " + destPath);
+        try {
+            AdbClient.ShellResult pushResult = AdbClient.pushFile(
+                    "127.0.0.1", adbdPort, dexData, destPath);
 
-            boolean success = destFile.exists() && destFile.length() > 0;
-            appendLog("  最终: exists=" + destFile.exists() + ", size=" + destFile.length() + " → " + (success ? "✓" : "✗"));
-            return success;
-
+            if (pushResult.isSuccess()) {
+                appendLog("  DEX 推送成功: " + destPath);
+                // 验证远程文件大小
+                AdbClient.ShellResult lsResult = AdbClient.executeShellOneShot(
+                        "127.0.0.1", adbdPort,
+                        "ls -la " + AdbClient.escapeShellArg(destPath));
+                appendLog("  远程文件信息: " + lsResult.stdout.trim());
+                return true;
+            } else {
+                appendLog("  DEX 推送失败: " + pushResult.stderr);
+                return false;
+            }
         } catch (Exception e) {
-            appendLog("  异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+            appendLog("  ADB push 异常: " + e.getMessage());
             e.printStackTrace();
             return false;
         }
@@ -783,65 +800,72 @@ public class MainActivity extends AppCompatActivity {
      */
     private String copyApkWithFallback() {
         for (String path : APK_CANDIDATE_PATHS) {
-            appendLog("尝试复制 APK → " + path);
+            appendLog("尝试通过 ADB push 推送 APK → " + path);
             if (tryCopyApk(path)) {
                 return path;
             }
             appendLog("  ✗ 失败");
         }
-        appendLog("所有 APK 路径均写入失败！");
+        appendLog("所有 APK 推送路径均失败！");
         return null;
     }
 
+    /**
+     * 通过 ADB push 将 APK 文件推送到设备 /data/local/tmp/ 目录
+     */
     private boolean tryCopyApk(String destPath) {
+        // 检查 ADB 端口是否已检测
+        if (adbdPort <= 0) {
+            appendLog("  ADB 端口未检测到，无法推送 APK 文件");
+            return false;
+        }
+
+        // 从 URI 读取 APK 文件数据
+        byte[] apkData;
         try {
-            File destFile = new File(destPath);
-
-            // 确保父目录存在
-            File parent = destFile.getParentFile();
-            if (parent != null && !parent.exists()) {
-                boolean mkdirResult = parent.mkdirs();
-                appendLog("  mkdirs " + parent.getAbsolutePath() + " → " + mkdirResult);
-            }
-
-            // 检查父目录是否可写
-            if (parent != null && !parent.canWrite()) {
-                appendLog("  父目录不可写: " + parent.getAbsolutePath());
+            InputStream inputStream = getContentResolver().openInputStream(selectedApkUri);
+            if (inputStream == null) {
+                appendLog("  ContentResolver.openInputStream 返回 null");
                 return false;
             }
 
-            // 删除旧文件
-            if (destFile.exists()) {
-                boolean deleted = destFile.delete();
-                appendLog("  删除旧文件 → " + deleted);
+            // 读取全部字节
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int bytesRead;
+            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                baos.write(buffer, 0, bytesRead);
             }
+            apkData = baos.toByteArray();
+            baos.close();
+            inputStream.close();
+            appendLog("  读取 APK 数据: " + apkData.length + " bytes");
+        } catch (IOException e) {
+            appendLog("  读取 APK 文件失败: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
 
-            // 从 URI 复制
-            try (InputStream inputStream = getContentResolver().openInputStream(selectedApkUri);
-                 FileOutputStream fos = new FileOutputStream(destFile)) {
-                if (inputStream == null) {
-                    appendLog("  ContentResolver.openInputStream 返回 null");
-                    return false;
-                }
+        // 通过 ADB push 推送到设备 /data/local/tmp/
+        appendLog("  通过 ADB push 推送 APK → " + destPath);
+        try {
+            AdbClient.ShellResult pushResult = AdbClient.pushFile(
+                    "127.0.0.1", adbdPort, apkData, destPath);
 
-                byte[] buffer = new byte[8192];
-                int bytesRead, total = 0;
-                while ((bytesRead = inputStream.read(buffer)) != -1) {
-                    fos.write(buffer, 0, bytesRead);
-                    total += bytesRead;
-                }
-                fos.flush();
-                appendLog("  写入 " + total + " bytes");
+            if (pushResult.isSuccess()) {
+                appendLog("  APK 推送成功: " + destPath);
+                // 验证远程文件大小
+                AdbClient.ShellResult lsResult = AdbClient.executeShellOneShot(
+                        "127.0.0.1", adbdPort,
+                        "ls -la " + AdbClient.escapeShellArg(destPath));
+                appendLog("  远程文件信息: " + lsResult.stdout.trim());
+                return true;
+            } else {
+                appendLog("  APK 推送失败: " + pushResult.stderr);
+                return false;
             }
-
-            destFile.setReadable(true, false);
-
-            boolean success = destFile.exists() && destFile.length() > 0;
-            appendLog("  最终: exists=" + destFile.exists() + ", size=" + destFile.length() + " → " + (success ? "✓" : "✗"));
-            return success;
-
         } catch (Exception e) {
-            appendLog("  异常: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+            appendLog("  ADB push 异常: " + e.getMessage());
             e.printStackTrace();
             return false;
         }
