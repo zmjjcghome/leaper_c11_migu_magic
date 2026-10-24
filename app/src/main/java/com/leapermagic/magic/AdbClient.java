@@ -1,4 +1,3 @@
-
 package com.leapermagic.magic;
 
 import java.io.*;
@@ -1563,7 +1562,394 @@ public class AdbClient {
     /**
      * 扫描局域网ADB设备
      */
-    public static java.util.List<String> scanLanDevices(String subnet, int timeoutMs) {
+    
+
+    // ==================== 新增：从文件路径推送（避免大文件一次性加载到内存） ====================
+    
+    /**
+     * 推送文件到设备（从源文件路径读取，避免大文件一次性加载到内存）
+     * 小文件走 host/port 快捷路径，大文件自动选择最优策略
+     * 
+     * @param host 目标主机IP
+     * @param port ADB端口
+     * @param sourceFilePath 源文件路径（设备或应用可访问的路径）
+     * @param remotePath 远程路径
+     * @return 执行结果
+     */
+    public static ShellResult pushFile(String host, int port, String sourceFilePath, String remotePath) {
+        String tag = "Push[" + host + ":" + port + "]";
+        logI(tag, "推送文件(从路径) | 源=" + sourceFilePath + " | 目标=" + remotePath);
+        
+        AdbConnection connection = null;
+        try {
+            AdbConnectionResult connResult = connect(host, port);
+            if (!connResult.success || connResult.connection == null) {
+                logE(tag, "连接失败 | " + connResult.message);
+                return new ShellResult(-1, "", "连接失败: " + connResult.message);
+            }
+            connection = connResult.connection;
+            return pushFile(connection, sourceFilePath, remotePath);
+        } catch (Exception e) {
+            logE(tag, "推送异常", e);
+            return new ShellResult(-1, "", "推送异常: " + e.getMessage());
+        } finally {
+            if (connection != null) {
+                connection.close();
+            }
+        }
+    }
+    
+    /**
+     * 推送文件到设备（从源文件路径读取，复用已有连接）
+     * 策略优先级: SYNC原生协议 > 分块Shell(单连接复用) > 直接Shell
+     * 文件通过 FileInputStream 分块读取，不会将整个文件加载到内存中
+     * 
+     * @param connection 已建立的ADB连接
+     * @param sourceFilePath 源文件路径（设备或应用可访问的路径）
+     * @param remotePath 远程路径
+     * @return 执行结果
+     */
+    public static ShellResult pushFile(AdbConnection connection, String sourceFilePath, String remotePath) {
+        String tag = "Push[" + connection.serial + "]";
+        
+        // 先获取文件大小
+        File sourceFile = new File(sourceFilePath);
+        if (!sourceFile.exists()) {
+            logE(tag, "源文件不存在: " + sourceFilePath);
+            return new ShellResult(-1, "", "源文件不存在: " + sourceFilePath);
+        }
+        long fileSize = sourceFile.length();
+        logI(tag, "推送文件(复用连接/从路径) | 大小=" + fileSize + " bytes | 源=" + sourceFilePath + " | 目标=" + remotePath);
+        
+        try {
+            // 策略1: SYNC原生协议推送（从文件流读取，避免全量加载到内存）
+            logD(tag, "策略1: 尝试SYNC原生协议推送(从文件)...");
+            ShellResult syncResult = pushFileSyncFromFile(connection, sourceFilePath, remotePath);
+            if (syncResult.isSuccess()) {
+                logI(tag, "SYNC推送成功 | 大小=" + fileSize + " bytes");
+                if (verifyFileSize(connection, remotePath, (int) Math.min(fileSize, Integer.MAX_VALUE))) {
+                    logI(tag, "文件大小验证通过");
+                    return syncResult;
+                }
+                logW(tag, "SYNC推送成功但大小验证失败，降级...");
+            } else {
+                logD(tag, "SYNC推送失败，降级分块Shell模式... | " + syncResult.stderr);
+            }
+            
+            // 策略2: 分块Shell推送（从文件流读取）
+            logD(tag, "策略2: 使用分块Shell模式推送(从文件)...");
+            ShellResult chunkResult = pushFileChunkedFromFile(connection, sourceFilePath, remotePath);
+            if (chunkResult.isSuccess()) {
+                if (verifyFileSize(connection, remotePath, (int) Math.min(fileSize, Integer.MAX_VALUE))) {
+                    logI(tag, "分块推送完成 | 大小=" + fileSize + " bytes 验证通过");
+                    return chunkResult;
+                }
+                logW(tag, "分块推送成功但大小验证失败");
+                return new ShellResult(-1, "", "文件大小验证失败");
+            }
+            
+            // 策略3: 直接Shell推送（小文件）
+            if (fileSize <= 200 * 1024) {
+                logD(tag, "策略3: 尝试直接Shell推送(从文件/小文件)...");
+                ShellResult directResult = pushFileDirectFromFile(connection, sourceFilePath, remotePath);
+                if (directResult.isSuccess()) {
+                    if (verifyFileSize(connection, remotePath, (int) Math.min(fileSize, Integer.MAX_VALUE))) {
+                        logI(tag, "直接推送完成 | 大小=" + fileSize + " bytes 验证通过");
+                        return directResult;
+                    }
+                    logW(tag, "直接推送成功但大小验证失败");
+                }
+            }
+            
+            logE(tag, "所有推送策略均失败");
+            return new ShellResult(-1, "", "所有推送策略均失败");
+            
+        } catch (Exception e) {
+            logE(tag, "推送异常", e);
+            return new ShellResult(-1, "", "推送异常: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 通过ADB SYNC协议推送文件（从文件路径读取，流式传输）
+     * 使用 FileInputStream 分块读取文件，避免大文件一次性加载到内存
+     */
+    private static ShellResult pushFileSyncFromFile(AdbConnection connection, String sourceFilePath, String remotePath) {
+        String tag = "PushSyncFile[" + connection.serial + "]";
+        FileInputStream fis = null;
+        
+        try {
+            fis = new FileInputStream(new File(sourceFilePath));
+            long fileSize = new File(sourceFilePath).length();
+            
+            DataOutputStream out = connection.output;
+            DataInputStream in = connection.input;
+            
+            // 1. 打开SYNC通道
+            int localId = connection.nextLocalId();
+            String syncTarget = "sync:localfilesystem:\0";
+            logD(tag, "步骤1: 打开SYNC通道...");
+            
+            sendShellMessage(out, A_OPEN, localId, 0x00000000,
+                    syncTarget.getBytes(StandardCharsets.UTF_8), tag);
+            
+            AdbMessage response = readAdbMessageRaw(in, tag);
+            if (response == null || response.command != A_OKAY) {
+                logE(tag, "SYNC通道打开失败 | command=0x" + 
+                     Integer.toHexString(response != null ? response.command : 0).toUpperCase());
+                return new ShellResult(-1, "", "SYNC通道打开失败");
+            }
+            
+            int remoteId = response.arg0;
+            logD(tag, "SYNC通道已打开 | localId=" + localId + " | remoteId=" + remoteId);
+            
+            // 2. 发送SEND命令
+            String fileName = remotePath.substring(remotePath.lastIndexOf('/') + 1);
+            String sendCommand = "SEND\0" + remotePath + "\0" + "100644\0";
+            logD(tag, "步骤2: 发送SEND命令 | 文件=" + fileName);
+            
+            byte[] sendPayload = sendCommand.getBytes(StandardCharsets.UTF_8);
+            int sendCrc = calculateCrc32(sendPayload);
+            byte[] sendMsg = buildSyncMessage(A_S_SEND, 0, 0, sendPayload.length, sendCrc, sendPayload);
+            
+            sendShellMessage(out, A_WRTE, localId, remoteId, sendMsg, tag);
+            
+            response = readAdbMessageRaw(in, tag);
+            if (response == null || response.command != A_OKAY) {
+                logE(tag, "SEND命令失败 | command=0x" + 
+                     Integer.toHexString(response != null ? response.command : 0).toUpperCase());
+                sendShellMessage(out, A_WRTE, localId, remoteId, 
+                        buildSyncMessage(A_S_QUIT, 0, 0, 0, 0, null), tag);
+                sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
+                return new ShellResult(-1, "", "SEND命令失败");
+            }
+            logD(tag, "SEND命令已确认");
+            
+            // 3. 分块读取文件并发送数据
+            int chunkSize = Math.min(FILE_CHUNK_SIZE, MAX_PAYLOAD - 64);
+            long totalSent = 0;
+            long startTime = System.currentTimeMillis();
+            byte[] readBuffer = new byte[chunkSize];
+            int bytesRead;
+            
+            logD(tag, "步骤3: 发送文件数据 | 块大小=" + chunkSize + " | 总大小=" + fileSize + " bytes");
+            
+            while ((bytesRead = fis.read(readBuffer)) != -1) {
+                byte[] chunk = java.util.Arrays.copyOf(readBuffer, bytesRead);
+                
+                // 构建DATA消息
+                int chunkCrc = calculateCrc32(chunk);
+                byte[] dataMsg = buildSyncMessage(A_S_DATA, 0, 0, bytesRead, chunkCrc, chunk);
+                
+                sendShellMessage(out, A_WRTE, localId, remoteId, dataMsg, tag);
+                
+                // 等待OKAY确认
+                response = readAdbMessageRaw(in, tag);
+                if (response == null || response.command != A_OKAY) {
+                    logE(tag, "DATA块确认失败 | command=0x" + 
+                         Integer.toHexString(response != null ? response.command : 0).toUpperCase());
+                    sendShellMessage(out, A_WRTE, localId, remoteId, 
+                            buildSyncMessage(A_S_QUIT, 0, 0, 0, 0, null), tag);
+                    sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
+                    return new ShellResult(-1, "", "DATA传输失败");
+                }
+                
+                totalSent += bytesRead;
+                
+                if (totalSent % (32 * 1024) == 0 || totalSent == fileSize) {
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    int percent = (int) (totalSent * 100 / fileSize);
+                    double speed = totalSent / (double) (elapsed > 0 ? elapsed : 1) * 1000;
+                    logD(tag, "SYNC进度: " + percent + "% | 已送=" + totalSent + "/" + fileSize + " bytes | " +
+                         (int) speed + "KB/s | 耗时=" + elapsed + "ms");
+                }
+            }
+            
+            // 4. 发送DONE命令
+            logD(tag, "步骤4: 发送DONE命令...");
+            byte[] timestamp = new byte[8];
+            long mtime = System.currentTimeMillis() / 1000;
+            for (int i = 0; i < 8; i++) {
+                timestamp[i] = (byte) (mtime >>> (i * 8));
+            }
+            byte[] doneMsg = buildSyncMessage(A_S_DONE, 0, 0, 8, 0, timestamp);
+            sendShellMessage(out, A_WRTE, localId, remoteId, doneMsg, tag);
+            
+            // 5. 等待最终响应
+            logD(tag, "步骤5: 等待设备处理完成...");
+            response = readAdbMessageRaw(in, tag);
+            if (response == null) {
+                logE(tag, "SYNC推送超时: 无响应");
+                sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
+                return new ShellResult(-1, "", "SYNC推送超时");
+            }
+            
+            if (response.command == A_OKAY) {
+                logI(tag, "SYNC推送完成 | 大小=" + fileSize + " bytes | 耗时=" + 
+                     (System.currentTimeMillis() - startTime) + "ms");
+                sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
+                return new ShellResult(0, "", "");
+            } else if (response.command == A_CLSE) {
+                logW(tag, "设备主动关闭SYNC通道，检查文件大小...");
+                sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
+                if (verifyFileSize(connection, remotePath, (int) Math.min(fileSize, Integer.MAX_VALUE))) {
+                    return new ShellResult(0, "", "");
+                }
+                return new ShellResult(-1, "", "设备关闭SYNC通道");
+            } else {
+                String failMsg = "";
+                if (response.payload != null && response.payload.length > 0) {
+                    failMsg = new String(response.payload, StandardCharsets.UTF_8);
+                }
+                logE(tag, "SYNC推送失败 | command=0x" + 
+                     Integer.toHexString(response.command).toUpperCase() + 
+                     " | 消息=" + failMsg);
+                sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
+                return new ShellResult(-1, "", "SYNC推送失败: " + failMsg);
+            }
+            
+        } catch (SocketTimeoutException e) {
+            logE(tag, "SYNC推送超时", e);
+            return new ShellResult(-1, "", "SYNC超时: " + e.getMessage());
+        } catch (Exception e) {
+            logE(tag, "SYNC推送异常", e);
+            return new ShellResult(-1, "", "SYNC异常: " + e.getMessage());
+        } finally {
+            if (fis != null) {
+                try { fis.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+    
+    /**
+     * 分块推送（从文件路径读取，逐块base64编码后写入）
+     * 使用 FileInputStream 分块读取文件，避免大文件一次性加载到内存
+     * 所有分块复用同一个AdbConnection
+     */
+    private static ShellResult pushFileChunkedFromFile(AdbConnection connection, String sourceFilePath, String remotePath) {
+        String tag = "PushChunkedFile[" + connection.serial + "]";
+        final int CHUNK_SIZE = FILE_CHUNK_SIZE;
+        
+        // 先删除可能存在的旧文件
+        ShellResult rmResult = executeShell(connection, 
+                "rm -f " + escapeShellArg(remotePath));
+        
+        long fileSize = new File(sourceFilePath).length();
+        int totalChunks = (int) ((fileSize + CHUNK_SIZE - 1) / CHUNK_SIZE);
+        int bytesWritten = 0;
+        int failedChunks = 0;
+        final int MAX_FAILED_CHUNKS = 5;
+        
+        logD(tag, "分块推送开始 | 总块数=" + totalChunks + " | 块大小=" + CHUNK_SIZE + " | 总大小=" + fileSize);
+        
+        FileInputStream fis = null;
+        try {
+            fis = new FileInputStream(new File(sourceFilePath));
+            byte[] readBuffer = new byte[CHUNK_SIZE];
+            int bytesRead;
+            
+            for (int chunkIndex = 0; (bytesRead = fis.read(readBuffer)) != -1; chunkIndex++) {
+                byte[] chunk = java.util.Arrays.copyOf(readBuffer, bytesRead);
+                
+                // Base64编码当前块
+                String base64Chunk = Base64.getEncoder().encodeToString(chunk);
+                
+                // 构建shell命令（使用>>追加模式写入）
+                String cmd = "printf \'%s\' \'" + base64Chunk + 
+                             "\' | base64 -d >> " + escapeShellArg(remotePath);
+                
+                // 使用executeShell(connection)复用已有连接
+                ShellResult result = executeShell(connection, cmd);
+                
+                if (!result.isSuccess()) {
+                    failedChunks++;
+                    logE(tag, "块#" + chunkIndex + "写入失败 | offset=" + bytesWritten + 
+                         " | 连续失败=" + failedChunks + " | " + result.stderr);
+                    
+                    if (failedChunks >= MAX_FAILED_CHUNKS) {
+                        logE(tag, "连续失败过多(" + MAX_FAILED_CHUNKS + "次)，清理文件并退出");
+                        executeShell(connection, "rm -f " + escapeShellArg(remotePath));
+                        return new ShellResult(-1, "", "分块写入连续失败");
+                    }
+                    
+                    try {
+                        logD(tag, "等待2000ms后重试块#" + chunkIndex + "...");
+                        Thread.sleep(2000);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        executeShell(connection, "rm -f " + escapeShellArg(remotePath));
+                        return new ShellResult(-1, "", "写入被中断");
+                    }
+                    
+                    // 不推进，重试当前块
+                    chunkIndex--;
+                    continue;
+                }
+                
+                failedChunks = 0;
+                bytesWritten += bytesRead;
+                
+                // 打印进度
+                if ((chunkIndex + 1) % 10 == 0 || bytesWritten == fileSize) {
+                    int percent = (int) ((double) bytesWritten / fileSize * 100);
+                    logD(tag, "进度: " + (chunkIndex + 1) + "块 (" + percent + "%) | 已写=" + bytesWritten + "/" + fileSize + " bytes");
+                }
+            }
+            
+            // 验证文件大小
+            if (verifyFileSize(connection, remotePath, (int) Math.min(fileSize, Integer.MAX_VALUE))) {
+                logI(tag, "分块推送完成 | 大小=" + fileSize + " bytes 验证通过");
+                return new ShellResult(0, "", "");
+            } else {
+                logE(tag, "文件大小验证失败 | 期望=" + fileSize + " bytes");
+                executeShell(connection, "rm -f " + escapeShellArg(remotePath));
+                return new ShellResult(-1, "", "文件大小验证失败");
+            }
+            
+        } catch (Exception e) {
+            logE(tag, "分块推送异常", e);
+            return new ShellResult(-1, "", "分块推送异常: " + e.getMessage());
+        } finally {
+            if (fis != null) {
+                try { fis.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+    
+    /**
+     * 直接推送（小文件专用 - 从文件路径读取，单次shell命令完成）
+     * 复用已有连接
+     */
+    private static ShellResult pushFileDirectFromFile(AdbConnection connection, String sourceFilePath, String remotePath) {
+        String tag = "PushDirectFile[" + connection.serial + "]";
+        
+        // 读取小文件到内存（小文件安全）
+        File sourceFile = new File(sourceFilePath);
+        if (sourceFile.length() > 200 * 1024) {
+            logW(tag, "文件过大(" + sourceFile.length() + " bytes)，跳过直接推送");
+            return new ShellResult(-1, "", "文件过大");
+        }
+        
+        byte[] fileData;
+        try (FileInputStream fis = new FileInputStream(sourceFile)) {
+            fileData = fis.readAllBytes();
+        } catch (IOException e) {
+            logE(tag, "读取源文件失败: " + e.getMessage());
+            return new ShellResult(-1, "", "读取源文件失败: " + e.getMessage());
+        }
+        
+        String base64Data = Base64.getEncoder().encodeToString(fileData);
+        logD(tag, "Base64编码后大小=" + base64Data.length() + " chars");
+        
+        String cmd = "printf '%s' '" + base64Data + 
+                     "' | base64 -d > " + escapeShellArg(remotePath);
+        
+        ShellResult result = executeShell(connection, cmd);
+        logD(tag, "直接推送执行完成 | exitCode=" + result.exitCode);
+        return result;
+    }
+
+public static java.util.List<String> scanLanDevices(String subnet, int timeoutMs) {
         String tag = "LanScan[" + subnet + ".0/24]";
         logI(tag, "开始扫描局域网ADB设备...");
         
