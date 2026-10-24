@@ -1,3 +1,4 @@
+
 package com.leapermagic.magic;
 
 import java.io.*;
@@ -1344,8 +1345,7 @@ public class AdbClient {
             
             // 1. 打开SYNC通道
             int localId = connection.nextLocalId();
-            // 修复：payload 必须严格为 "sync:"，不能带其他参数
-            String syncPayload = "sync:"; 
+            String syncTarget = "sync:\0";
             logD(tag, "步骤1: 打开SYNC通道...");
             
             sendShellMessage(out, A_OPEN, localId, 0x00000000,
@@ -1484,15 +1484,7 @@ public class AdbClient {
             return new ShellResult(-1, "", "SYNC异常: " + e.getMessage());
         }
     }
-    /**
-     * 辅助方法：将 int 写入 byte 数组 (Little-Endian，ADB Sync 协议要求)
-     */
-    private static void writeInt32(byte[] dest, int offset, int value) {
-        dest[offset] = (byte) (value & 0xFF);
-        dest[offset + 1] = (byte) ((value >> 8) & 0xFF);
-        dest[offset + 2] = (byte) ((value >> 16) & 0xFF);
-        dest[offset + 3] = (byte) ((value >> 24) & 0xFF);
-    }
+    
     /**
      * 构建SYNC协议消息
      * 格式: id(4bytes="SYNC") + command(4) + arg0(4) + arg1(4) + data_length(4) + data_crc32(4) + payload
@@ -1696,7 +1688,7 @@ public class AdbClient {
             
             // 1. 打开SYNC通道
             int localId = connection.nextLocalId();
-            String syncTarget = "sync:localfilesystem:\0";
+            String syncTarget = "sync:\0";
             logD(tag, "步骤1: 打开SYNC通道...");
             
             sendShellMessage(out, A_OPEN, localId, 0x00000000,
