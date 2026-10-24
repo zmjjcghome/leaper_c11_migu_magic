@@ -449,7 +449,7 @@ public class AdbClient {
                        " | arg0=0x" + Integer.toHexString(arg0) +
                        " | arg1=0x" + Integer.toHexString(arg1) +
                        " | dataLen=" + dataLength +
-                       " | data='" + preview + (dataLength > 64 ? "..." : "") + "'");
+                       " | data='" + preview.substring(0, Math.min(300, preview.length())).trim() + (dataLength > 64 ? "..." : "") + "'");
         }
         ByteBuffer header = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN);
         header.putInt(command);
@@ -615,7 +615,7 @@ public class AdbClient {
             String shellPayload = "shell:" + command + "\0";
             
             logD(tag, "步骤1: 打开Shell通道 | localId=" + localId + " | payload=" + 
-                       shellPayload.replace("\0", "\\0"));
+                       shellPayload.replace("\0", "\\0").substring(0, Math.min(300, shellPayload.length())).trim());
             
             sendShellMessage(out, A_OPEN, localId, 0x00000000, 
                              shellPayload.getBytes(StandardCharsets.UTF_8), tag);
