@@ -16,6 +16,7 @@ import android.text.TextWatcher;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
+import android.widget.ScrollView;
 import android.widget.Toast;
 import android.Manifest;
 
@@ -66,6 +67,7 @@ public class MainActivity extends AppCompatActivity {
 
     private TextView tvSelectedApk;
     private TextView tvLog;
+    private ScrollView tvLogScroll;
     private EditText etTargetPath;
     private Button btnToggleMonitor;
     private Button btnPrepareFiles;    // 按钮1：复制 dex + apk
@@ -246,6 +248,7 @@ public class MainActivity extends AppCompatActivity {
 
         tvSelectedApk = findViewById(R.id.tv_selected_apk);
         tvLog = findViewById(R.id.tv_log);
+        tvLogScroll = findViewById(R.id.tv_log_scroll);
         etTargetPath = findViewById(R.id.et_target_path);
         btnToggleMonitor = findViewById(R.id.btn_toggle_monitor);
         btnPrepareFiles = findViewById(R.id.btn_prepare_files);
@@ -648,10 +651,19 @@ public class MainActivity extends AppCompatActivity {
             String newLine = "[" + timestamp + "] " + msg + "\n";
             // 追加新文本后自动滚到底部
             tvLog.append(newLine);
-            tvLog.post(() -> {
-                // 计算滚动总高度：文本总高度 - 控件可视高度，直接定位到最底部
-                int bottomY = tvLog.getLayout().getHeight() - tvLog.getHeight() + tvLog.getPaddingBottom();
-                tvLog.scrollTo(0, bottomY);
+            
+            // 2. 关键步骤：使用 post 延迟执行滚动
+            // 因为 setText/append 后，View 需要重新测量布局高度，
+            // 立即调用 scrollTo 可能获取的是旧的高度，导致滚不到底。
+            tvLogScroll.post(new Runnable() {
+                @Override
+                public void run() {
+                    // 方法一：平滑滚动（推荐，体验更好）
+                    tvLogScroll.fullScroll(View.FOCUS_DOWN);
+                    
+                    // 方法二：瞬间跳转到底部（如果不需要动画）
+                    // tvLogScroll.scrollTo(0, tvLogScroll.getChildAt(0).getHeight());
+                }
             });
 
         });
