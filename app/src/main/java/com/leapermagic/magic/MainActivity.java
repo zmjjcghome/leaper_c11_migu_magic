@@ -650,6 +650,16 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 tvLog.setText(current + "\n" + newLine);
             }
+            tvLog.post(() -> {
+                int scrollAmount = tvLog.getLayout() != null 
+                    ? tvLog.getLayout().getLineTop(tvLog.getLineCount()) - tvLog.getHeight()
+                    : 0;
+                if (scrollAmount > 0) {
+                    tvLog.scrollTo(0, scrollAmount);
+                } else {
+                    tvLog.scrollTo(0, 0);
+                }
+            });
         });
     }
 
