@@ -1364,7 +1364,7 @@ public class AdbClient {
         
         // 1. 打开Shell通道，执行 base64 -d >> remotePath
         int localId = connection.nextLocalId();
-        String shellCmd = "base64 -d >> " + escapeShellArg(remotePath);
+        String shellCmd = "base64 -d >> \"" + remotePath + "\"";
         
         logD(tag, "步骤1: 打开Shell通道执行: " + shellCmd);
         sendShellMessage(out, A_OPEN, localId, 0x00000000,
