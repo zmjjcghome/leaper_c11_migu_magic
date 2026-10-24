@@ -122,9 +122,17 @@
             android:textSize="14sp" />
     </ScrollView>
     
+<!--
+        android:scrollbars="vertical"   开启竖直滚动条 
+    android:scrollbarStyle="outsideOverlay"  滚动条悬浮在控件外侧，不挤压文本区域 
+    android:overScrollMode="never"   关闭过度滚动的光晕效果 -->
+    
     <ScrollView
     android:layout_width="match_parent"
     android:layout_height="100dp"
+    android:scrollbars="vertical"
+    android:scrollbarStyle="outsideOverlay"
+    android:overScrollMode="never"
     android:background="#1A1A1A"
     android:padding="1dp">
         <TextView
