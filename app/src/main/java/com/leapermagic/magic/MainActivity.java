@@ -662,6 +662,10 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        btnPrepareFiles.setEnabled(false);
+        tvStatus.setText("正在通过 ADB 推送文件...");
+        appendLog("========== 开始通过 ADB push 准备文件 ==========");
+        
         // 确保 ADB 连接已建立
         if (adbdPort <= 0) {
             appendLog("ADB 端口未检测到，正在初始化 ADB 连接...");
@@ -681,170 +685,170 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        btnPrepareFiles.setEnabled(false);
-        tvStatus.setText("正在通过 ADB 推送文件...");
-        appendLog("========== 开始通过 ADB push 准备文件 ==========");
 
-        // ====== 建立单次 ADB 连接，DEX 和 APK 推送复用此连接 ======
-        AdbClient.AdbConnection conn = null;
-        try {
-            // 1. 建立或复用 ADB 连接
-            if (adbConnection == null) {
-                appendLog("正在建立 ADB 连接...");
-                AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
-                if (!result.success || result.connection == null) {
-                    uiHandler.post(() -> {
-                        tvStatus.setText("ADB 连接失败: " + result.message);
-                        btnPrepareFiles.setEnabled(true);
-                        Toast.makeText(MainActivity.this, "ADB 连接失败", Toast.LENGTH_LONG).show();
-                    });
-                    appendLog("ADB 连接失败: " + result.message);
-                    return;
-                }
-                adbConnection = result.connection;
-                appendLog("ADB 连接已建立 ✓ | 端口=" + adbdPort + " | 单连接复用模式");
-            } else {
-                appendLog("复用已有 ADB 连接 | 端口=" + adbdPort + " | 单连接复用模式");
-            }
-            conn = adbConnection;
-
-            // 2. 检查 DEX 是否已推送并验证一致性
-            String dexRemotePath = DEX_CANDIDATE_PATHS[0];
-            appendLog("========== 检查 DEX 文件状态 ==========");
+         new Thread(() -> {
             
-            // 先获取本地 DEX 大小（从 assets 读取）
-            long localDexSize = 0;
-            try (InputStream dexCheckStream = getAssets().open("classes.dex")) {
-                byte[] buffer = new byte[8192];
-                int read;
-                while ((read = dexCheckStream.read(buffer)) != -1) {
-                    localDexSize += read;
+            // ====== 建立单次 ADB 连接，DEX 和 APK 推送复用此连接 ======
+            AdbClient.AdbConnection conn = null;
+            try {
+                // 1. 建立或复用 ADB 连接
+                if (adbConnection == null) {
+                    appendLog("正在建立 ADB 连接...");
+                    AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
+                    if (!result.success || result.connection == null) {
+                        uiHandler.post(() -> {
+                            tvStatus.setText("ADB 连接失败: " + result.message);
+                            btnPrepareFiles.setEnabled(true);
+                            Toast.makeText(MainActivity.this, "ADB 连接失败", Toast.LENGTH_LONG).show();
+                        });
+                        appendLog("ADB 连接失败: " + result.message);
+                        return;
+                    }
+                    adbConnection = result.connection;
+                    appendLog("ADB 连接已建立 ✓ | 端口=" + adbdPort + " | 单连接复用模式");
+                } else {
+                    appendLog("复用已有 ADB 连接 | 端口=" + adbdPort + " | 单连接复用模式");
                 }
-                appendLog("本地 DEX 文件大小: " + localDexSize + " bytes");
-            } catch (IOException e) {
-                appendLog("读取本地 DEX 失败: " + e.getMessage());
-                uiHandler.post(() -> {
-                    tvStatus.setText("读取 DEX 文件失败");
-                    btnPrepareFiles.setEnabled(true);
-                });
-                return;
-            }
-
-            // 检查设备上的 DEX 文件是否存在及大小
-            AdbClient.ShellResult statResult = AdbClient.executeShell(conn, 
-                    "stat -c %s " + AdbClient.escapeShellArg(dexRemotePath));
-            
-            boolean dexExists = false;
-            long remoteDexSize = 0;
-            if (statResult.isSuccess()) {
-                try {
-                    remoteDexSize = Long.parseLong(statResult.stdout.trim());
-                    dexExists = (remoteDexSize > 0);
-                    appendLog("设备 DEX 文件大小: " + remoteDexSize + " bytes");
-                } catch (NumberFormatException ignored) {
-                    appendLog("无法解析 DEX 文件大小，将重新推送");
-                }
-            } else {
-                appendLog("设备上 DEX 文件不存在或 stat 命令失败");
-            }
-
-            // 验证一致性：大小匹配则跳过推送
-            if (dexExists && remoteDexSize == localDexSize) {
-                appendLog("DEX 文件已存在且大小一致 (" + localDexSize + " bytes)，跳过推送");
-                actualDexPath = dexRemotePath;
-            } else {
-                appendLog("DEX 文件不存在或大小不一致 (本地=" + localDexSize + " 设备=" + remoteDexSize + ")，开始推送...");
+                conn = adbConnection;
+    
+                // 2. 检查 DEX 是否已推送并验证一致性
+                String dexRemotePath = DEX_CANDIDATE_PATHS[0];
+                appendLog("========== 检查 DEX 文件状态 ==========");
                 
-                // 将 DEX 从 assets 保存到临时文件
-                String dexTempPath = saveDexToTempFile();
-                if (dexTempPath == null) {
+                // 先获取本地 DEX 大小（从 assets 读取）
+                long localDexSize = 0;
+                try (InputStream dexCheckStream = getAssets().open("classes.dex")) {
+                    byte[] buffer = new byte[8192];
+                    int read;
+                    while ((read = dexCheckStream.read(buffer)) != -1) {
+                        localDexSize += read;
+                    }
+                    appendLog("本地 DEX 文件大小: " + localDexSize + " bytes");
+                } catch (IOException e) {
+                    appendLog("读取本地 DEX 失败: " + e.getMessage());
                     uiHandler.post(() -> {
-                        tvStatus.setText("DEX 临时文件保存失败");
+                        tvStatus.setText("读取 DEX 文件失败");
                         btnPrepareFiles.setEnabled(true);
                     });
                     return;
                 }
+    
+                // 检查设备上的 DEX 文件是否存在及大小
+                AdbClient.ShellResult statResult = AdbClient.executeShell(conn, 
+                        "stat -c %s " + AdbClient.escapeShellArg(dexRemotePath));
+                
+                boolean dexExists = false;
+                long remoteDexSize = 0;
+                if (statResult.isSuccess()) {
+                    try {
+                        remoteDexSize = Long.parseLong(statResult.stdout.trim());
+                        dexExists = (remoteDexSize > 0);
+                        appendLog("设备 DEX 文件大小: " + remoteDexSize + " bytes");
+                    } catch (NumberFormatException ignored) {
+                        appendLog("无法解析 DEX 文件大小，将重新推送");
+                    }
+                } else {
+                    appendLog("设备上 DEX 文件不存在或 stat 命令失败");
+                }
+    
+                // 验证一致性：大小匹配则跳过推送
+                if (dexExists && remoteDexSize == localDexSize) {
+                    appendLog("DEX 文件已存在且大小一致 (" + localDexSize + " bytes)，跳过推送");
+                    actualDexPath = dexRemotePath;
+                } else {
+                    appendLog("DEX 文件不存在或大小不一致 (本地=" + localDexSize + " 设备=" + remoteDexSize + ")，开始推送...");
+                    
+                    // 将 DEX 从 assets 保存到临时文件
+                    String dexTempPath = saveDexToTempFile();
+                    if (dexTempPath == null) {
+                        uiHandler.post(() -> {
+                            tvStatus.setText("DEX 临时文件保存失败");
+                            btnPrepareFiles.setEnabled(true);
+                        });
+                        return;
+                    }
+                    
+                    // 使用 AdbClient 新的文件路径推送方法（流式读取，不一次性加载到内存）
+                    appendLog("调用 AdbClient.pushFile(conn, dexTempPath, " + dexRemotePath + ")...");
+                    AdbClient.ShellResult dexPushResult = AdbClient.pushFile(conn, dexTempPath, dexRemotePath);
+                    
+                    if (!dexPushResult.isSuccess()) {
+                        appendLog("DEX 推送失败: " + dexPushResult.stderr);
+                        uiHandler.post(() -> {
+                            tvStatus.setText("DEX 推送失败，查看日志");
+                            btnPrepareFiles.setEnabled(true);
+                        });
+                        return;
+                    }
+                    
+                    actualDexPath = dexRemotePath;
+                    appendLog("DEX 推送成功 → " + actualDexPath);
+                    
+                    // 清理临时文件
+                    new File(dexTempPath).delete();
+                }
+    
+                // 3. 推送 APK（复用同一连接）
+                String apkRemotePath = APK_CANDIDATE_PATHS[0];
+                appendLog("========== 推送 APK 文件 ==========");
+                
+                // 获取 APK 实际文件路径
+                String apkFilePath = getActualApkFilePath();
+                if (apkFilePath == null) {
+                    uiHandler.post(() -> {
+                        tvStatus.setText("无法获取 APK 文件路径");
+                        btnPrepareFiles.setEnabled(true);
+                    });
+                    return;
+                }
+                
+                appendLog("APK 源路径: " + apkFilePath);
+                File apkFile = new File(apkFilePath);
+                appendLog("APK 文件大小: " + apkFile.length() + " bytes");
                 
                 // 使用 AdbClient 新的文件路径推送方法（流式读取，不一次性加载到内存）
-                appendLog("调用 AdbClient.pushFile(conn, dexTempPath, " + dexRemotePath + ")...");
-                AdbClient.ShellResult dexPushResult = AdbClient.pushFile(conn, dexTempPath, dexRemotePath);
+                appendLog("调用 AdbClient.pushFile(conn, apkFilePath, " + apkRemotePath + ")...");
+                AdbClient.ShellResult apkPushResult = AdbClient.pushFile(conn, apkFilePath, apkRemotePath);
                 
-                if (!dexPushResult.isSuccess()) {
-                    appendLog("DEX 推送失败: " + dexPushResult.stderr);
+                if (!apkPushResult.isSuccess()) {
+                    appendLog("APK 推送失败: " + apkPushResult.stderr);
                     uiHandler.post(() -> {
-                        tvStatus.setText("DEX 推送失败，查看日志");
+                        tvStatus.setText("APK 推送失败，查看日志");
                         btnPrepareFiles.setEnabled(true);
                     });
                     return;
                 }
                 
-                actualDexPath = dexRemotePath;
-                appendLog("DEX 推送成功 → " + actualDexPath);
-                
-                // 清理临时文件
-                new File(dexTempPath).delete();
-            }
-
-            // 3. 推送 APK（复用同一连接）
-            String apkRemotePath = APK_CANDIDATE_PATHS[0];
-            appendLog("========== 推送 APK 文件 ==========");
-            
-            // 获取 APK 实际文件路径
-            String apkFilePath = getActualApkFilePath();
-            if (apkFilePath == null) {
+                actualApkPath = apkRemotePath;
+                appendLog("APK 推送成功 → " + actualApkPath);
+    
                 uiHandler.post(() -> {
-                    tvStatus.setText("无法获取 APK 文件路径");
+                    tvStatus.setText("文件推送完成，可执行安装");
+                    btnPrepareFiles.setEnabled(true);
+                    btnExecuteInstall.setEnabled(true);
+                    Toast.makeText(MainActivity.this, "文件准备完成", Toast.LENGTH_SHORT).show();
+                });
+                appendLog("========== 文件准备完成 ==========");
+            } catch (Exception e) {
+                appendLog("推送异常: " + e.getMessage());
+                e.printStackTrace();
+                uiHandler.post(() -> {
+                    tvStatus.setText("推送异常: " + e.getMessage());
                     btnPrepareFiles.setEnabled(true);
                 });
-                return;
-            }
-            
-            appendLog("APK 源路径: " + apkFilePath);
-            File apkFile = new File(apkFilePath);
-            appendLog("APK 文件大小: " + apkFile.length() + " bytes");
-            
-            // 使用 AdbClient 新的文件路径推送方法（流式读取，不一次性加载到内存）
-            appendLog("调用 AdbClient.pushFile(conn, apkFilePath, " + apkRemotePath + ")...");
-            AdbClient.ShellResult apkPushResult = AdbClient.pushFile(conn, apkFilePath, apkRemotePath);
-            
-            if (!apkPushResult.isSuccess()) {
-                appendLog("APK 推送失败: " + apkPushResult.stderr);
-                uiHandler.post(() -> {
-                    tvStatus.setText("APK 推送失败，查看日志");
-                    btnPrepareFiles.setEnabled(true);
-                });
-                return;
-            }
-            
-            actualApkPath = apkRemotePath;
-            appendLog("APK 推送成功 → " + actualApkPath);
-
-            uiHandler.post(() -> {
-                tvStatus.setText("文件推送完成，可执行安装");
-                btnPrepareFiles.setEnabled(true);
-                btnExecuteInstall.setEnabled(true);
-                Toast.makeText(MainActivity.this, "文件准备完成", Toast.LENGTH_SHORT).show();
-            });
-            appendLog("========== 文件准备完成 ==========");
-        } catch (Exception e) {
-            appendLog("推送异常: " + e.getMessage());
-            e.printStackTrace();
-            uiHandler.post(() -> {
-                tvStatus.setText("推送异常: " + e.getMessage());
-                btnPrepareFiles.setEnabled(true);
-            });
-        } finally {
-            // 统一关闭连接，释放资源
-            if (conn != null) {
-                try {
-                    appendLog("关闭 ADB 连接...");
-                    conn.close();
-                    appendLog("ADB 连接已关闭");
-                } catch (Exception e) {
-                    appendLog("关闭连接异常: " + e.getMessage());
+            } finally {
+                // 统一关闭连接，释放资源
+                if (conn != null) {
+                    try {
+                        appendLog("关闭 ADB 连接...");
+                        conn.close();
+                        appendLog("ADB 连接已关闭");
+                    } catch (Exception e) {
+                        appendLog("关闭连接异常: " + e.getMessage());
+                    }
                 }
             }
-        }
+         }).start();
     }
 
     /**
