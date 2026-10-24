@@ -1064,7 +1064,7 @@ public class MainActivity extends AppCompatActivity {
                         Toast.makeText(MainActivity.this, "ADB 连接失败", Toast.LENGTH_LONG).show();
                     });
                     appendLog("ADB 连接失败: " + result.message);
-                    return;
+                    return "ADB 连接失败";
                 }
                 adbConnection = result.connection;
                 appendLog("ADB 连接已建立 ✓ | 端口=" + adbdPort + " | 单连接复用模式");
