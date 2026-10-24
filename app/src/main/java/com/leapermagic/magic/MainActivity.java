@@ -835,10 +835,10 @@ public class MainActivity extends AppCompatActivity {
 
                 Thread.sleep(500);
                 
-                AdbClient.ShellResult cpResult = AdbClient.executeShell(conn, 
+                AdbClient.ShellResult apkCpResult = AdbClient.executeShell(conn, 
                         "cp \"" + apkFilePath + "\" \"" + apkRemotePath + "\"");
 
-                if (!cpResult.isSuccess()) {
+                if (!apkCpResult.isSuccess()) {
 
                     // 使用 AdbClient 新的文件路径推送方法（流式读取，不一次性加载到内存）
                     appendLog("调用 AdbClient.pushFile(conn, apkFilePath, " + apkRemotePath + ")...");
