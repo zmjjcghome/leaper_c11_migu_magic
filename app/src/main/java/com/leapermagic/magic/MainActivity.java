@@ -1102,7 +1102,7 @@ public class MainActivity extends AppCompatActivity {
                     //File targetFile = new File(apkPath);
                     
                     if (AdbClient.executeShell(adbConnection, 
-                    "rm -f " + escapeShellArg(apkPath)).isSuccess()) {
+                    "rm -f " + AdbClient.escapeShellArg(apkPath)).isSuccess()) {
                         appendLog("[ADB] 成功删除temp apk文件:"+apkPath);
                     } else {
                         appendLog("[ADB] 无法删除temp apk文件:"+apkPath);
