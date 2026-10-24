@@ -1,4 +1,3 @@
-
 package com.leapermagic.magic;
 
 import java.io.*;
@@ -1119,6 +1118,13 @@ public class AdbClient {
                 logW(tag, "SYNC推送成功但大小验证失败，降级分块模式...");
             } else {
                 logD(tag, "SYNC推送失败，降级分块Shell模式... | " + syncResult.stderr);
+                // SYNC失败后等待设备端清理状态（无线ADB连接需要）
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    logW(tag, "降级等待被中断");
+                }
             }
             
             // 策略2: 分块Shell推送（复用同一个连接）
@@ -1185,6 +1191,13 @@ public class AdbClient {
                 logW(tag, "SYNC推送成功但大小验证失败，降级分块模式...");
             } else {
                 logD(tag, "SYNC推送失败，降级分块Shell模式... | " + syncResult.stderr);
+                // SYNC失败后等待设备端清理状态（无线ADB连接需要）
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    logW(tag, "降级等待被中断");
+                }
             }
             
             // 策略2: 分块Shell推送（复用同一个连接）
@@ -1345,7 +1358,7 @@ public class AdbClient {
             
             // 1. 打开SYNC通道
             int localId = connection.nextLocalId();
-            String syncTarget = "sync:\0";
+            String syncTarget = "sync\0";
             logD(tag, "步骤1: 打开SYNC通道...");
             
             sendShellMessage(out, A_OPEN, localId, 0x00000000,
@@ -1635,6 +1648,13 @@ public class AdbClient {
                 logW(tag, "SYNC推送成功但大小验证失败，降级...");
             } else {
                 logD(tag, "SYNC推送失败，降级分块Shell模式... | " + syncResult.stderr);
+                // SYNC失败后等待设备端清理状态（无线ADB连接需要）
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    logW(tag, "降级等待被中断");
+                }
             }
             
             // 策略2: 分块Shell推送（从文件流读取）
@@ -1688,7 +1708,7 @@ public class AdbClient {
             
             // 1. 打开SYNC通道
             int localId = connection.nextLocalId();
-            String syncTarget = "sync:\0";
+            String syncTarget = "sync\0";
             logD(tag, "步骤1: 打开SYNC通道...");
             
             sendShellMessage(out, A_OPEN, localId, 0x00000000,
