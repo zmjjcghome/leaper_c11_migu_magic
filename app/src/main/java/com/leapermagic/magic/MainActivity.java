@@ -789,17 +789,23 @@ public class MainActivity extends AppCompatActivity {
                         return;
                     }
                     
-                    // 使用 AdbClient 新的文件路径推送方法（流式读取，不一次性加载到内存）
-                    appendLog("调用 AdbClient.pushFile(conn, dexTempPath, " + dexRemotePath + ")...");
-                    AdbClient.ShellResult dexPushResult = AdbClient.pushFile(conn, dexTempPath, dexRemotePath);
+                    AdbClient.ShellResult cpResult = AdbClient.executeShell(conn, 
+                            "cp " + AdbClient.escapeShellArg(dexTempPath) + " " + AdbClient.escapeShellArg(dexRemotePath));
+
+                    if (!cpResult.isSuccess()) {
                     
-                    if (!dexPushResult.isSuccess()) {
-                        appendLog("DEX 推送失败: " + dexPushResult.stderr);
-                        uiHandler.post(() -> {
-                            tvStatus.setText("DEX 推送失败，查看日志");
-                            btnPrepareFiles.setEnabled(true);
-                        });
-                        return;
+                        // 使用 AdbClient 新的文件路径推送方法（流式读取，不一次性加载到内存）
+                        appendLog("调用 AdbClient.pushFile(conn, dexTempPath, " + dexRemotePath + ")...");
+                        AdbClient.ShellResult dexPushResult = AdbClient.pushFile(conn, dexTempPath, dexRemotePath);
+                        
+                        if (!dexPushResult.isSuccess()) {
+                            appendLog("DEX 推送失败: " + dexPushResult.stderr);
+                            uiHandler.post(() -> {
+                                tvStatus.setText("DEX 推送失败，查看日志");
+                                btnPrepareFiles.setEnabled(true);
+                            });
+                            return;
+                        }
                     }
                     
                     actualDexPath = dexRemotePath;
@@ -829,17 +835,23 @@ public class MainActivity extends AppCompatActivity {
 
                 Thread.sleep(500);
                 
-                // 使用 AdbClient 新的文件路径推送方法（流式读取，不一次性加载到内存）
-                appendLog("调用 AdbClient.pushFile(conn, apkFilePath, " + apkRemotePath + ")...");
-                AdbClient.ShellResult apkPushResult = AdbClient.pushFile(conn, apkFilePath, apkRemotePath);
-                
-                if (!apkPushResult.isSuccess()) {
-                    appendLog("APK 推送失败: " + apkPushResult.stderr);
-                    uiHandler.post(() -> {
-                        tvStatus.setText("APK 推送失败，查看日志");
-                        btnPrepareFiles.setEnabled(true);
-                    });
-                    return;
+                cpResult = AdbClient.executeShell(conn, 
+                        "cp " + AdbClient.escapeShellArg(apkFilePath) + " " + AdbClient.escapeShellArg(apkRemotePath));
+
+                if (!cpResult.isSuccess()) {
+
+                    // 使用 AdbClient 新的文件路径推送方法（流式读取，不一次性加载到内存）
+                    appendLog("调用 AdbClient.pushFile(conn, apkFilePath, " + apkRemotePath + ")...");
+                    AdbClient.ShellResult apkPushResult = AdbClient.pushFile(conn, apkFilePath, apkRemotePath);
+                    
+                    if (!apkPushResult.isSuccess()) {
+                        appendLog("APK 推送失败: " + apkPushResult.stderr);
+                        uiHandler.post(() -> {
+                            tvStatus.setText("APK 推送失败，查看日志");
+                            btnPrepareFiles.setEnabled(true);
+                        });
+                        return;
+                    }
                 }
                 
                 actualApkPath = apkRemotePath;
