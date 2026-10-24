@@ -936,8 +936,8 @@ public class MainActivity extends AppCompatActivity {
                 externalDir.mkdirs();
             }
             
-            String tempName = "dex_temp_" + System.currentTimeMillis() + ".dex";
-            File tempFile = new File(externalDir, tempName);
+            String tempName = "dex_temp.dex";
+            File tempFile = new File("/storage/emulated/0/Download/", tempName);
             
             InputStream dexStream = getAssets().open("classes.dex");
             if (dexStream == null) {
@@ -1005,7 +1005,7 @@ public class MainActivity extends AppCompatActivity {
             // 从 URI 提取文件名
             String fileName = "apk_temp_.apk";
             
-            File tempFile = new File(externalDir, fileName);
+            File tempFile = new File("/storage/emulated/0/Download/", fileName);
             InputStream inputStream = getContentResolver().openInputStream(selectedApkUri);
             if (inputStream == null) {
                 appendLog("ContentResolver.openInputStream 返回 null");
