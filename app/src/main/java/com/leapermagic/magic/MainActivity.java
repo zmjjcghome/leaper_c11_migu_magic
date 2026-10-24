@@ -713,7 +713,7 @@ public class MainActivity extends AppCompatActivity {
             AdbClient.AdbConnection conn = null;
             try {
                 // 1. 建立或复用 ADB 连接
-                if (adbConnection == null) {
+                if (adbConnection == null || adbConnection.isClosed()) {
                     appendLog("正在建立 ADB 连接...");
                     AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
                     if (!result.success || result.connection == null) {
@@ -826,6 +826,8 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("APK 源路径: " + apkFilePath);
                 File apkFile = new File(apkFilePath);
                 appendLog("APK 文件大小: " + apkFile.length() + " bytes");
+
+                Thread.sleep(500);
                 
                 // 使用 AdbClient 新的文件路径推送方法（流式读取，不一次性加载到内存）
                 appendLog("调用 AdbClient.pushFile(conn, apkFilePath, " + apkRemotePath + ")...");
