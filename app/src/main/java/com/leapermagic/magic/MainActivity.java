@@ -1098,14 +1098,16 @@ public class MainActivity extends AppCompatActivity {
                 appendLog("[ADB] 退出码: " + result.exitCode);
                 if (result.isSuccess()) {
                     appendLog("[ADB] 安装命令执行成功");
-                    File targetFile = new File(apkPath);
-                    if (targetFile.exists()) {
-                        if (targetFile.exists() && !targetFile.delete()) {
-                            appendLog("[ADB] 无法删除temp apk文件:"+apkPath);
-                        } else {
-                            appendLog("[ADB] 成功删除temp apk文件:"+apkPath);
-                        }
+
+                    //File targetFile = new File(apkPath);
+                    
+                    if (AdbClient.executeShell(adbConnection, 
+                    "rm -f " + escapeShellArg(apkPath)).isSuccess()) {
+                        appendLog("[ADB] 成功删除temp apk文件:"+apkPath);
+                    } else {
+                        appendLog("[ADB] 无法删除temp apk文件:"+apkPath);
                     }
+                    
                 } else {
                     appendLog("[ADB] 安装命令执行失败");
                 }
