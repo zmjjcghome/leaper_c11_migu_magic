@@ -146,43 +146,6 @@ public class AdbClient {
         return sw.toString();
     }
 
-
-    /**
-     * 清空Socket输入缓冲区中的残留消息
-     * 在SYNC失败后调用，避免残留消息干扰后续Shell通道
-     */
-    private static void drainSocketBuffer(DataInputStream in, String tag) {
-        try {
-            int drained = 0;
-            // 短暂等待确保所有待处理消息到达
-            Thread.sleep(100);
-            while (in.available() > 0) {
-                byte[] header = new byte[Math.min(in.available(), 24)];
-                in.readFully(header);
-                drained += header.length;
-                // 如果读到了完整头部，读取payload
-                ByteBuffer buf = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN);
-                int dataLen = buf.getInt(); // offset 4
-                if (dataLen > 0 && dataLen <= MAX_PAYLOAD) {
-                    byte[] payload = new byte[dataLen];
-                    try {
-                        in.readFully(payload);
-                        drained += payload.length;
-                    } catch (IOException e) {
-                        break;
-                    }
-                }
-            }
-            if (drained > 0) {
-                logW(tag, "SYNC失败后清空缓冲区 | 清除=" + drained + " bytes");
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (Exception e) {
-            logD(tag, "清空缓冲区异常: " + e.getMessage());
-        }
-    }
-
     // ==================== 内部类 ====================
     
     /**
@@ -697,7 +660,6 @@ public class AdbClient {
             StringBuilder stdout = new StringBuilder();
             StringBuilder stderr = new StringBuilder();
             boolean shellClosed = false;
-            boolean alreadySentClse = false;
             int writeCount = 0;
             long totalBytes = 0;
     
@@ -747,9 +709,8 @@ public class AdbClient {
                             stderr.append(closeData);
                         }
                         
-                        // 发送CLSE确认（标记已发送，避免下方重复发送）
+                        // 发送CLSE确认
                         sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
-                        alreadySentClse = true;
                         break;
     
                     case A_OKAY:
@@ -773,10 +734,8 @@ public class AdbClient {
                 }
             }
     
-            // 4. 确保本地关闭（如果还没有发送过CLSE）
-            if (!alreadySentClse) {
-                sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
-            }
+            // 4. 确保本地关闭
+            sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
     
             String stdoutStr = stdout.toString();
             String stderrStr = stderr.toString();
@@ -1109,8 +1068,9 @@ public class AdbClient {
     private static final int SYNC_HEADER_SIZE = 24;
     
     // 文件传输分块大小（原始数据）- 控制在 MAX_PAYLOAD(256KB) 以内，无线ADB建议更小
-    private static final int FILE_CHUNK_SIZE = 32 * 1024;  // 32KB 每块（SYNC协议用）
-    private static final int SHELL_CHUNK_SIZE = 8 * 1024;   // 8KB 每块（Shell模式用，避免命令过长）
+    private static final int FILE_CHUNK_SIZE = 32 * 1024;  // 32KB 每块
+    // 流式Shell推送块大小（无每块握手开销，可使用更大块）
+    private static final int STREAM_SHELL_CHUNK_SIZE = 64 * 1024;  // 64KB 每块
     
     /**
      * 推送文件（优化版 - 自适应分块传输）
@@ -1124,7 +1084,7 @@ public class AdbClient {
      */
     /**
      * 推送文件到设备（自动选择最优策略）
-     * 策略优先级: SYNC原生协议 > 分块Shell(单连接复用) > 直接Shell
+     * 策略优先级: 流式Shell(最快) > 分块Shell(最可靠) > 直接Shell(小文件更快) > SYNC(备选)
      * 
      * @param host 目标主机IP
      * @param port ADB端口
@@ -1147,32 +1107,22 @@ public class AdbClient {
             connection = connResult.connection;
             logD(tag, "连接已建立，开始推送...");
             
-            // 策略1: 优先尝试SYNC原生协议推送（最高效，无Base64膨胀）
-            logD(tag, "策略1: 尝试SYNC原生协议推送...");
-            ShellResult syncResult = pushFileSync(connection, data, remotePath);
-            if (syncResult.isSuccess()) {
-                logI(tag, "SYNC推送成功 | 大小=" + data.length + " bytes");
-                // 验证文件大小
+            // 注意：SYNC协议在无线ADB上不稳定，部分设备不支持SYNC over wireless
+            // 优先使用Shell方式推送，更可靠
+            
+            // 策略1: 单连接流式Shell推送（性能最优 - 只打开1次Shell通道）
+            logD(tag, "策略1: 使用单连接流式Shell模式推送(" + data.length + " bytes)...");
+            ShellResult streamResult = pushFileStreamShell(connection, data, remotePath);
+            if (streamResult.isSuccess()) {
                 if (verifyFileSize(connection, remotePath, data.length)) {
-                    logI(tag, "文件大小验证通过 ✓");
-                    return syncResult;
+                    logI(tag, "流式Shell推送完成 | 大小=" + data.length + " bytes 验证通过");
+                    return streamResult;
                 }
-                logW(tag, "SYNC推送成功但大小验证失败，降级分块模式...");
-            } else {
-                logW(tag, "SYNC推送失败，降级分块Shell模式... | " + syncResult.stderr);
-                
-                // 关键修复：清空Socket缓冲区残留消息 + 等待设备恢复
-                logD(tag, "SYNC失败后清空Socket缓冲区并等待设备恢复...");
-                try {
-                    drainSocketBuffer(connection.input, tag);
-                    Thread.sleep(1500); // 等待1.5秒让设备adbd恢复
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    logW(tag, "等待被中断");
-                }
+                logW(tag, "流式Shell推送成功但大小验证失败");
+                return new ShellResult(-1, "", "文件大小验证失败");
             }
             
-            // 策略2: 分块Shell推送（复用同一个连接，使用更小的块大小）
+            // 策略2: 分块Shell推送（复用同一个连接，最可靠）
             logD(tag, "策略2: 使用分块Shell模式推送(" + data.length + " bytes)...");
             ShellResult chunkResult = pushFileChunked(connection, data, remotePath);
             if (chunkResult.isSuccess()) {
@@ -1184,7 +1134,7 @@ public class AdbClient {
                 return new ShellResult(-1, "", "文件大小验证失败");
             }
             
-            // 策略3: 小文件直接推送（最后手段）
+            // 策略3: 小文件直接推送（更快）
             if (data.length <= 200 * 1024) {
                 logD(tag, "策略3: 尝试直接Shell推送(小文件)...");
                 ShellResult directResult = pushFileDirect(connection, data, remotePath);
@@ -1195,6 +1145,14 @@ public class AdbClient {
                     }
                     logW(tag, "直接推送成功但大小验证失败");
                 }
+            }
+            
+            // 策略4: 作为最后备选，尝试SYNC协议（部分设备可能支持）
+            logD(tag, "策略4: 备选尝试SYNC原生协议推送...");
+            ShellResult syncResult = pushFileSync(connection, data, remotePath);
+            if (syncResult.isSuccess()) {
+                logI(tag, "SYNC推送成功(备选) | 大小=" + data.length + " bytes");
+                return syncResult;
             }
             
             logE(tag, "所有推送策略均失败");
@@ -1224,31 +1182,22 @@ public class AdbClient {
         logI(tag, "推送文件(复用连接) | 大小=" + data.length + " bytes | 目标=" + remotePath);
         
         try {
-            // 策略1: 优先尝试SYNC原生协议推送
-            logD(tag, "策略1: 尝试SYNC原生协议推送...");
-            ShellResult syncResult = pushFileSync(connection, data, remotePath);
-            if (syncResult.isSuccess()) {
-                logI(tag, "SYNC推送成功 | 大小=" + data.length + " bytes");
+            // 注意：SYNC协议在无线ADB上不稳定，部分设备不支持SYNC over wireless
+            // 优先使用Shell方式推送，更可靠
+            
+            // 策略1: 单连接流式Shell推送（性能最优 - 只打开1次Shell通道）
+            logD(tag, "策略1: 使用单连接流式Shell模式推送(" + data.length + " bytes)...");
+            ShellResult streamResult = pushFileStreamShell(connection, data, remotePath);
+            if (streamResult.isSuccess()) {
                 if (verifyFileSize(connection, remotePath, data.length)) {
-                    logI(tag, "文件大小验证通过 ✓");
-                    return syncResult;
+                    logI(tag, "流式Shell推送完成 | 大小=" + data.length + " bytes 验证通过");
+                    return streamResult;
                 }
-                logW(tag, "SYNC推送成功但大小验证失败，降级分块模式...");
-            } else {
-                logW(tag, "SYNC推送失败，降级分块Shell模式... | " + syncResult.stderr);
-                
-                // 关键修复：清空Socket缓冲区残留消息 + 等待设备恢复
-                logD(tag, "SYNC失败后清空Socket缓冲区并等待设备恢复...");
-                try {
-                    drainSocketBuffer(connection.input, tag);
-                    Thread.sleep(1500); // 等待1.5秒让设备adbd恢复
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    logW(tag, "等待被中断");
-                }
+                logW(tag, "流式Shell推送成功但大小验证失败");
+                return new ShellResult(-1, "", "文件大小验证失败");
             }
             
-            // 策略2: 分块Shell推送（复用同一个连接，使用更小的块大小）
+            // 策略2: 分块Shell推送（复用同一个连接，最可靠）
             logD(tag, "策略2: 使用分块Shell模式推送(" + data.length + " bytes)...");
             ShellResult chunkResult = pushFileChunked(connection, data, remotePath);
             if (chunkResult.isSuccess()) {
@@ -1260,15 +1209,7 @@ public class AdbClient {
                 return new ShellResult(-1, "", "文件大小验证失败");
             }
             
-            // 策略2也失败，等待后尝试策略3
-            logW(tag, "分块Shell推送失败，等待后尝试直接Shell推送...");
-            try {
-                Thread.sleep(2000); // 等待2秒让设备完全恢复
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-            }
-            
-            // 策略3: 小文件直接推送
+            // 策略3: 小文件直接推送（更快）
             if (data.length <= 200 * 1024) {
                 logD(tag, "策略3: 尝试直接Shell推送(小文件)...");
                 ShellResult directResult = pushFileDirect(connection, data, remotePath);
@@ -1279,6 +1220,14 @@ public class AdbClient {
                     }
                     logW(tag, "直接推送成功但大小验证失败");
                 }
+            }
+            
+            // 策略4: 作为最后备选，尝试SYNC协议（部分设备可能支持）
+            logD(tag, "策略4: 备选尝试SYNC原生协议推送...");
+            ShellResult syncResult = pushFileSync(connection, data, remotePath);
+            if (syncResult.isSuccess()) {
+                logI(tag, "SYNC推送成功(备选) | 大小=" + data.length + " bytes");
+                return syncResult;
             }
             
             logE(tag, "所有推送策略均失败");
@@ -1317,8 +1266,7 @@ public class AdbClient {
      */
     private static ShellResult pushFileChunked(AdbConnection connection, byte[] data, String remotePath) {
         String tag = "PushChunked[" + connection.serial + "]";
-        // 使用更小的块大小避免Shell命令过长
-        final int CHUNK_SIZE = SHELL_CHUNK_SIZE;
+        final int CHUNK_SIZE = FILE_CHUNK_SIZE;
         
         // 先删除可能存在的旧文件
         ShellResult rmResult = executeShell(connection, 
@@ -1357,11 +1305,10 @@ public class AdbClient {
                     return new ShellResult(-1, "", "分块写入连续失败");
                 }
                 
-                // 指数退避重试
-                long retryDelay = 2000L * failedChunks;
-                logD(tag, "块#" + chunkIndex + "写入失败，等待" + retryDelay + "ms后重试 (连续失败=" + failedChunks + ")...");
+                // 失败后等待重试
                 try {
-                    Thread.sleep(retryDelay);
+                    logD(tag, "等待2000ms后重试块#" + chunkIndex + "...");
+                    Thread.sleep(2000);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     executeShell(connection, "rm -f " + escapeShellArg(remotePath));
@@ -1377,11 +1324,6 @@ public class AdbClient {
             failedChunks = 0;
             bytesWritten += chunk.length;
             offset = chunkEnd;
-            
-            // 每次写入后短暂暂停，给设备处理时间
-            try { Thread.sleep(100); } catch (InterruptedException ie) { 
-                Thread.currentThread().interrupt(); 
-            }
             
             // 打印进度
             if ((chunkIndex + 1) % 10 == 0 || chunkIndex == totalChunks - 1) {
@@ -1402,6 +1344,263 @@ public class AdbClient {
         }
     }
     
+
+    /**
+     * 【方案二】单连接流式Shell推送（性能最优 - 只打开1次Shell通道，持续写入）
+     * 核心思想：打开一个Shell通道执行 base64 -d >> path，然后在同一个通道内持续发送Base64编码数据块
+     * 性能提升：将N次Shell建连减少为1次，大幅降低ADB握手和进程创建开销
+     * 
+     * @param connection 已建立的ADB连接
+     * @param data 文件数据
+     * @param remotePath 远程路径
+     * @return 执行结果
+     */
+    private static ShellResult pushFileStreamShell(AdbConnection connection, byte[] data, String remotePath) {
+        String tag = "PushStreamShell[" + connection.serial + "]";
+        logI(tag, "流式Shell推送开始 | 大小=" + data.length + " bytes | 目标=" + remotePath);
+        
+        DataOutputStream out = connection.output;
+        DataInputStream in = connection.input;
+        
+        // 1. 打开Shell通道，执行 base64 -d >> remotePath
+        int localId = connection.nextLocalId();
+        String shellCmd = "base64 -d >> " + escapeShellArg(remotePath);
+        
+        logD(tag, "步骤1: 打开Shell通道执行: " + shellCmd);
+        sendShellMessage(out, A_OPEN, localId, 0x00000000,
+                ("shell:" + shellCmd + "\0").getBytes(StandardCharsets.UTF_8), tag);
+        
+        // 等待OKAY响应
+        AdbMessage response = readAdbMessageRaw(in, tag);
+        if (response == null || response.command != A_OKAY) {
+            logE(tag, "Shell通道打开失败 | command=0x" + 
+                 Integer.toHexString(response != null ? response.command : 0).toUpperCase());
+            return new ShellResult(-1, "", "Shell通道打开失败");
+        }
+        
+        int remoteId = response.arg0;
+        logD(tag, "Shell通道已打开 | localId=" + localId + " | remoteId=" + remoteId);
+        
+        // 2. 流式发送Base64编码数据块
+        int chunkSize = STREAM_SHELL_CHUNK_SIZE;
+        int offset = 0;
+        int bytesWritten = 0;
+        long startTime = System.currentTimeMillis();
+        
+        logD(tag, "步骤2: 开始流式写入 | 块大小=" + chunkSize + " bytes");
+        
+        try {
+            while (offset < data.length) {
+                int chunkEnd = Math.min(offset + chunkSize, data.length);
+                byte[] chunk = java.util.Arrays.copyOfRange(data, offset, chunkEnd);
+                
+                // Base64编码当前块
+                String base64Chunk = Base64.getEncoder().encodeToString(chunk);
+                byte[] base64Bytes = base64Chunk.getBytes(StandardCharsets.UTF_8);
+                
+                // 通过WRTE命令发送数据（设备端base64进程从stdin读取并解码写入文件）
+                sendShellMessage(out, A_WRTE, localId, remoteId, base64Bytes, tag);
+                
+                // 读取设备响应（OKAY流控确认 或 WRTE stdout数据）
+                boolean gotOkay = false;
+                while (!gotOkay) {
+                    response = readAdbMessageRaw(in, tag);
+                    if (response == null) {
+                        logE(tag, "流式写入中断: 无响应");
+                        sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
+                        return new ShellResult(-1, "", "流式写入中断");
+                    }
+                    
+                    switch (response.command) {
+                        case A_OKAY:
+                            gotOkay = true;
+                            break;
+                        case A_WRTE:
+                            String stdoutData = new String(response.payload, StandardCharsets.UTF_8);
+                            if (!stdoutData.isEmpty()) {
+                                logD(tag, "Shell stdout: " + stdoutData.trim().substring(0, Math.min(100, stdoutData.length())));
+                            }
+                            sendShellMessage(out, A_OKAY, localId, remoteId, null, tag);
+                            break;
+                        case A_CLSE:
+                            logW(tag, "设备关闭Shell通道 | 已写=" + bytesWritten + " bytes");
+                            if (bytesWritten >= data.length) {
+                                logI(tag, "数据已全部发送，设备关闭通道视为成功");
+                                return new ShellResult(0, "", "");
+                            }
+                            return new ShellResult(-1, "", "设备关闭Shell通道");
+                        default:
+                            logW(tag, "未知响应: 0x" + Integer.toHexString(response.command).toUpperCase());
+                            break;
+                    }
+                }
+                
+                bytesWritten += chunk.length;
+                offset = chunkEnd;
+                
+                // 打印进度
+                if (offset % (32 * 1024) == 0 || offset == data.length) {
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    int percent = (int) ((double) bytesWritten / data.length * 100);
+                    double speed = bytesWritten / (double) (elapsed > 0 ? elapsed : 1) * 1000;
+                    logD(tag, "流式进度: " + percent + "% | 已写=" + bytesWritten + "/" + data.length + 
+                         " bytes | " + (int)speed + "KB/s | 耗时=" + elapsed + "ms");
+                }
+            }
+        } catch (Exception e) {
+            logE(tag, "流式写入异常", e);
+            sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
+            return new ShellResult(-1, "", "流式写入异常: " + e.getMessage());
+        }
+        
+        // 3. 关闭Shell通道
+        logD(tag, "步骤3: 关闭Shell通道...");
+        sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
+        
+        // 4. 验证文件大小
+        if (verifyFileSize(connection, remotePath, data.length)) {
+            long elapsed = System.currentTimeMillis() - startTime;
+            logI(tag, "流式Shell推送完成 | 大小=" + data.length + " bytes | 耗时=" + elapsed + "ms");
+            return new ShellResult(0, "", "");
+        } else {
+            logE(tag, "文件大小验证失败 | 期望=" + data.length + " bytes");
+            executeShell(connection, "rm -f " + escapeShellArg(remotePath));
+            return new ShellResult(-1, "", "文件大小验证失败");
+        }
+    }
+    
+    /**
+     * 【方案二】单连接流式Shell推送（从文件路径读取，避免大文件一次性加载到内存）
+     * 核心思想：打开一个Shell通道执行 base64 -d >> path，然后通过同一个通道持续发送Base64编码数据块
+     * 
+     * @param connection 已建立的ADB连接
+     * @param sourceFilePath 源文件路径
+     * @param remotePath 远程路径
+     * @return 执行结果
+     */
+    private static ShellResult pushFileStreamShellFromFile(AdbConnection connection, String sourceFilePath, String remotePath) {
+        String tag = "PushStreamShellFile[" + connection.serial + "]";
+        File sourceFile = new File(sourceFilePath);
+        long fileSize = sourceFile.length();
+        
+        logI(tag, "流式Shell推送(从文件)开始 | 大小=" + fileSize + " bytes | 源=" + sourceFilePath + " | 目标=" + remotePath);
+        
+        DataOutputStream out = connection.output;
+        DataInputStream in = connection.input;
+        
+        // 1. 打开Shell通道，执行 base64 -d >> remotePath
+        int localId = connection.nextLocalId();
+        String shellCmd = "base64 -d >> " + escapeShellArg(remotePath);
+        
+        logD(tag, "步骤1: 打开Shell通道执行: " + shellCmd);
+        sendShellMessage(out, A_OPEN, localId, 0x00000000,
+                ("shell:" + shellCmd + "\0").getBytes(StandardCharsets.UTF_8), tag);
+        
+        // 等待OKAY响应
+        AdbMessage response = readAdbMessageRaw(in, tag);
+        if (response == null || response.command != A_OKAY) {
+            logE(tag, "Shell通道打开失败 | command=0x" + 
+                 Integer.toHexString(response != null ? response.command : 0).toUpperCase());
+            return new ShellResult(-1, "", "Shell通道打开失败");
+        }
+        
+        int remoteId = response.arg0;
+        logD(tag, "Shell通道已打开 | localId=" + localId + " | remoteId=" + remoteId);
+        
+        // 2. 流式读取文件并发送
+        int chunkSize = STREAM_SHELL_CHUNK_SIZE;
+        long bytesWritten = 0;
+        long startTime = System.currentTimeMillis();
+        FileInputStream fis = null;
+        
+        logD(tag, "步骤2: 开始流式读取并写入 | 块大小=" + chunkSize + " bytes");
+        
+        try {
+            fis = new FileInputStream(sourceFile);
+            byte[] readBuffer = new byte[chunkSize];
+            int bytesRead;
+            
+            while ((bytesRead = fis.read(readBuffer)) != -1) {
+                byte[] chunk = java.util.Arrays.copyOf(readBuffer, bytesRead);
+                
+                // Base64编码当前块
+                String base64Chunk = Base64.getEncoder().encodeToString(chunk);
+                byte[] base64Bytes = base64Chunk.getBytes(StandardCharsets.UTF_8);
+                
+                // 通过WRTE命令发送数据
+                sendShellMessage(out, A_WRTE, localId, remoteId, base64Bytes, tag);
+                
+                // 读取设备响应（OKAY流控确认 或 WRTE stdout数据）
+                boolean gotOkay = false;
+                while (!gotOkay) {
+                    response = readAdbMessageRaw(in, tag);
+                    if (response == null) {
+                        logE(tag, "流式写入中断: 无响应");
+                        sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
+                        return new ShellResult(-1, "", "流式写入中断");
+                    }
+                    
+                    switch (response.command) {
+                        case A_OKAY:
+                            gotOkay = true;
+                            break;
+                        case A_WRTE:
+                            String stdoutData = new String(response.payload, StandardCharsets.UTF_8);
+                            if (!stdoutData.isEmpty()) {
+                                logD(tag, "Shell stdout: " + stdoutData.trim().substring(0, Math.min(100, stdoutData.length())));
+                            }
+                            sendShellMessage(out, A_OKAY, localId, remoteId, null, tag);
+                            break;
+                        case A_CLSE:
+                            logW(tag, "设备关闭Shell通道 | 已写=" + bytesWritten + " bytes");
+                            if (bytesWritten >= fileSize) {
+                                logI(tag, "数据已全部发送，设备关闭通道视为成功");
+                                return new ShellResult(0, "", "");
+                            }
+                            return new ShellResult(-1, "", "设备关闭Shell通道");
+                        default:
+                            logW(tag, "未知响应: 0x" + Integer.toHexString(response.command).toUpperCase());
+                            break;
+                    }
+                }
+                
+                bytesWritten += bytesRead;
+                
+                // 打印进度
+                if (bytesWritten % (32 * 1024) == 0 || bytesWritten == fileSize) {
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    int percent = (int) (bytesWritten * 100 / fileSize);
+                    double speed = bytesWritten / (double) (elapsed > 0 ? elapsed : 1) * 1000;
+                    logD(tag, "流式进度: " + percent + "% | 已写=" + bytesWritten + "/" + fileSize + 
+                         " bytes | " + (int)speed + "KB/s | 耗时=" + elapsed + "ms");
+                }
+            }
+        } catch (Exception e) {
+            logE(tag, "流式写入异常", e);
+            sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
+            return new ShellResult(-1, "", "流式写入异常: " + e.getMessage());
+        } finally {
+            if (fis != null) {
+                try { fis.close(); } catch (Exception ignored) {}
+            }
+        }
+        
+        // 3. 关闭Shell通道
+        logD(tag, "步骤3: 关闭Shell通道...");
+        sendShellMessage(out, A_CLSE, localId, remoteId, null, tag);
+        
+        // 4. 验证文件大小
+        if (verifyFileSize(connection, remotePath, (int) Math.min(fileSize, Integer.MAX_VALUE))) {
+            long elapsed = System.currentTimeMillis() - startTime;
+            logI(tag, "流式Shell推送完成(从文件) | 大小=" + fileSize + " bytes | 耗时=" + elapsed + "ms");
+            return new ShellResult(0, "", "");
+        } else {
+            logE(tag, "文件大小验证失败 | 期望=" + fileSize + " bytes");
+            executeShell(connection, "rm -f " + escapeShellArg(remotePath));
+            return new ShellResult(-1, "", "文件大小验证失败");
+        }
+    }
+
     /**
      * 通过ADB SYNC协议推送文件（最高效 - 原生协议，无Base64膨胀）
      * 需要已建立的AdbConnection，避免每次分块都重新握手
@@ -1421,7 +1620,7 @@ public class AdbClient {
             
             // 1. 打开SYNC通道
             int localId = connection.nextLocalId();
-            String syncTarget = "sync:\0";
+            String syncTarget = "sync\0";
             logD(tag, "步骤1: 打开SYNC通道...");
             
             sendShellMessage(out, A_OPEN, localId, 0x00000000,
@@ -1678,7 +1877,7 @@ public class AdbClient {
     
     /**
      * 推送文件到设备（从源文件路径读取，复用已有连接）
-     * 策略优先级: SYNC原生协议 > 分块Shell(单连接复用) > 直接Shell
+     * 策略优先级: 流式Shell(最快) > 分块Shell(最可靠) > 直接Shell(小文件更快) > SYNC(备选)
      * 文件通过 FileInputStream 分块读取，不会将整个文件加载到内存中
      * 
      * @param connection 已建立的ADB连接
@@ -1699,31 +1898,22 @@ public class AdbClient {
         logI(tag, "推送文件(复用连接/从路径) | 大小=" + fileSize + " bytes | 源=" + sourceFilePath + " | 目标=" + remotePath);
         
         try {
-            // 策略1: SYNC原生协议推送（从文件流读取，避免全量加载到内存）
-            logD(tag, "策略1: 尝试SYNC原生协议推送(从文件)...");
-            ShellResult syncResult = pushFileSyncFromFile(connection, sourceFilePath, remotePath);
-            if (syncResult.isSuccess()) {
-                logI(tag, "SYNC推送成功 | 大小=" + fileSize + " bytes");
+            // 注意：SYNC协议在无线ADB上不稳定，部分设备不支持SYNC over wireless
+            // 因此优先使用Shell方式推送，仅在文件较小且Shell失败时尝试SYNC作为备选
+            
+            // 策略1: 单连接流式Shell推送（性能最优 - 只打开1次Shell通道，从文件流读取）
+            logD(tag, "策略1: 使用单连接流式Shell模式推送(从文件)...");
+            ShellResult streamResult = pushFileStreamShellFromFile(connection, sourceFilePath, remotePath);
+            if (streamResult.isSuccess()) {
                 if (verifyFileSize(connection, remotePath, (int) Math.min(fileSize, Integer.MAX_VALUE))) {
-                    logI(tag, "文件大小验证通过");
-                    return syncResult;
+                    logI(tag, "流式Shell推送完成(从文件) | 大小=" + fileSize + " bytes 验证通过");
+                    return streamResult;
                 }
-                logW(tag, "SYNC推送成功但大小验证失败，降级...");
-            } else {
-                logW(tag, "SYNC推送失败，降级分块Shell模式... | " + syncResult.stderr);
-                
-                // 关键修复：清空Socket缓冲区残留消息 + 等待设备恢复
-                logD(tag, "SYNC失败后清空Socket缓冲区并等待设备恢复...");
-                try {
-                    drainSocketBuffer(connection.input, tag);
-                    Thread.sleep(1500); // 等待1.5秒让设备adbd恢复
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    logW(tag, "等待被中断");
-                }
+                logW(tag, "流式Shell推送成功但大小验证失败");
+                return new ShellResult(-1, "", "文件大小验证失败");
             }
             
-            // 策略2: 分块Shell推送（从文件流读取，使用更小的块大小避免命令过长）
+            // 策略2: 分块Shell推送（从文件流读取，最可靠）
             logD(tag, "策略2: 使用分块Shell模式推送(从文件)...");
             ShellResult chunkResult = pushFileChunkedFromFile(connection, sourceFilePath, remotePath);
             if (chunkResult.isSuccess()) {
@@ -1735,15 +1925,7 @@ public class AdbClient {
                 return new ShellResult(-1, "", "文件大小验证失败");
             }
             
-            // 策略2也失败，等待后尝试策略3
-            logW(tag, "分块Shell推送失败，等待后尝试直接Shell推送...");
-            try {
-                Thread.sleep(2000); // 等待2秒让设备完全恢复
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-            }
-            
-            // 策略3: 直接Shell推送（小文件）
+            // 策略3: 直接Shell推送（小文件专用，更快）
             if (fileSize <= 200 * 1024) {
                 logD(tag, "策略3: 尝试直接Shell推送(从文件/小文件)...");
                 ShellResult directResult = pushFileDirectFromFile(connection, sourceFilePath, remotePath);
@@ -1754,6 +1936,14 @@ public class AdbClient {
                     }
                     logW(tag, "直接推送成功但大小验证失败");
                 }
+            }
+            
+            // 策略4: 作为最后备选，尝试SYNC协议（部分设备可能支持）
+            logD(tag, "策略4: 备选尝试SYNC原生协议推送(从文件)...");
+            ShellResult syncResult = pushFileSyncFromFile(connection, sourceFilePath, remotePath);
+            if (syncResult.isSuccess()) {
+                logI(tag, "SYNC推送成功(备选) | 大小=" + fileSize + " bytes");
+                return syncResult;
             }
             
             logE(tag, "所有推送策略均失败");
@@ -1782,7 +1972,7 @@ public class AdbClient {
             
             // 1. 打开SYNC通道
             int localId = connection.nextLocalId();
-            String syncTarget = "sync:\0";
+            String syncTarget = "sync\0";
             logD(tag, "步骤1: 打开SYNC通道...");
             
             sendShellMessage(out, A_OPEN, localId, 0x00000000,
@@ -1923,23 +2113,19 @@ public class AdbClient {
      */
     private static ShellResult pushFileChunkedFromFile(AdbConnection connection, String sourceFilePath, String remotePath) {
         String tag = "PushChunkedFile[" + connection.serial + "]";
-        // 使用更小的块大小（8KB原始数据），避免Shell命令过长导致设备拒绝
-        final int CHUNK_SIZE = SHELL_CHUNK_SIZE;
+        final int CHUNK_SIZE = FILE_CHUNK_SIZE;
         
         // 先删除可能存在的旧文件
         ShellResult rmResult = executeShell(connection, 
                 "rm -f " + escapeShellArg(remotePath));
-        // 删除命令后稍等，确保文件被释放
-        try { Thread.sleep(300); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); }
         
         long fileSize = new File(sourceFilePath).length();
         int totalChunks = (int) ((fileSize + CHUNK_SIZE - 1) / CHUNK_SIZE);
         int bytesWritten = 0;
         int failedChunks = 0;
-        final int MAX_FAILED_CHUNKS = 8; // 允许更多重试
+        final int MAX_FAILED_CHUNKS = 5;
         
-        logD(tag, "分块推送开始 | 总块数=" + totalChunks + " | 块大小=" + CHUNK_SIZE + 
-             " (原始) | Base64后~" + (int)(CHUNK_SIZE * 1.34) + " | 总大小=" + fileSize);
+        logD(tag, "分块推送开始 | 总块数=" + totalChunks + " | 块大小=" + CHUNK_SIZE + " | 总大小=" + fileSize);
         
         FileInputStream fis = null;
         try {
@@ -1954,17 +2140,26 @@ public class AdbClient {
                 String base64Chunk = Base64.getEncoder().encodeToString(chunk);
                 
                 // 构建shell命令（使用>>追加模式写入）
-                // 注意：base64数据只包含A-Za-z0-9+/=，在单引号内是安全的
                 String cmd = "printf \'%s\' \'" + base64Chunk + 
                              "\' | base64 -d >> " + escapeShellArg(remotePath);
                 
+                // 检查连接状态，如果连接已关闭则重试
+                if (connection.isClosed()) {
+                    logW(tag, "连接已关闭，等待5000ms后重试...");
+                    try {
+                        Thread.sleep(5000);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        executeShell(connection, "rm -f " + escapeShellArg(remotePath));
+                        return new ShellResult(-1, "", "写入被中断");
+                    }
+                    // 不推进，重试当前块
+                    chunkIndex--;
+                    continue;
+                }
+                
                 // 使用executeShell(connection)复用已有连接
                 ShellResult result = executeShell(connection, cmd);
-                
-                // 每次命令执行后短暂暂停，给设备处理时间
-                try { Thread.sleep(100); } catch (InterruptedException ie) { 
-                    Thread.currentThread().interrupt(); 
-                }
                 
                 if (!result.isSuccess()) {
                     failedChunks++;
@@ -1977,18 +2172,18 @@ public class AdbClient {
                         return new ShellResult(-1, "", "分块写入连续失败");
                     }
                     
-                    // 指数退避重试：失败次数越多等待越久
-                    long retryDelay = 2000L * failedChunks; // 2s, 4s, 6s...
-                    logD(tag, "块#" + chunkIndex + "写入失败，等待" + retryDelay + "ms后重试 (连续失败=" + failedChunks + ")...");
                     try {
-                        Thread.sleep(retryDelay);
+                        // 指数退避：2s -> 4s -> 6s -> ...
+                        int waitTime = Math.min(2000 + failedChunks * 1000, 10000);
+                        logD(tag, "等待" + waitTime + "ms后重试块#" + chunkIndex + "...");
+                        Thread.sleep(waitTime);
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         executeShell(connection, "rm -f " + escapeShellArg(remotePath));
                         return new ShellResult(-1, "", "写入被中断");
                     }
                     
-                    // 重试当前块
+                    // 不推进，重试当前块
                     chunkIndex--;
                     continue;
                 }
@@ -1999,7 +2194,7 @@ public class AdbClient {
                 // 打印进度
                 if ((chunkIndex + 1) % 10 == 0 || bytesWritten == fileSize) {
                     int percent = (int) ((double) bytesWritten / fileSize * 100);
-                    logD(tag, "进度: " + (chunkIndex + 1) + "/" + totalChunks + "块 (" + percent + "%) | 已写=" + bytesWritten + "/" + fileSize + " bytes");
+                    logD(tag, "进度: " + (chunkIndex + 1) + "块 (" + percent + "%) | 已写=" + bytesWritten + "/" + fileSize + " bytes");
                 }
             }
             
