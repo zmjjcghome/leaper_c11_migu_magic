@@ -1051,8 +1051,27 @@ public class MainActivity extends AppCompatActivity {
         // 然后再尝试连接
         //connectToDevice("127.0.0.1", 5555);
         if (adbConnection == null || adbConnection.isClosed()) {
-            appendLog("========== 开始初始化adb ==========");
-            initAdbConnection();
+            // ====== 建立单次 ADB 连接，DEX 和 APK 推送复用此连接 ======
+
+            // 1. 建立或复用 ADB 连接
+            if (adbConnection == null) {
+                appendLog("正在建立 ADB 连接...");
+                AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
+                if (!result.success || result.connection == null) {
+                    uiHandler.post(() -> {
+                        tvStatus.setText("ADB 连接失败: " + result.message);
+                        btnPrepareFiles.setEnabled(true);
+                        Toast.makeText(MainActivity.this, "ADB 连接失败", Toast.LENGTH_LONG).show();
+                    });
+                    appendLog("ADB 连接失败: " + result.message);
+                    return;
+                }
+                adbConnection = result.connection;
+                appendLog("ADB 连接已建立 ✓ | 端口=" + adbdPort + " | 单连接复用模式");
+            } else {
+                appendLog("复用已有 ADB 连接 | 端口=" + adbdPort + " | 单连接复用模式");
+            }
+
         }
         // 如果 ADB 连接可用，优先使用（shell UID 权限）
         if (adbConnection != null && adbdPort > 0) {
