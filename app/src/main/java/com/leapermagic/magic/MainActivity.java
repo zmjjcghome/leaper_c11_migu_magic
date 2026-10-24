@@ -257,6 +257,10 @@ public class MainActivity extends AppCompatActivity {
         btnResignApk = findViewById(R.id.btn_resign_apk);
         // btnInstallResigned = findViewById(R.id.btn_install_resigned);
         tvStatus = findViewById(R.id.tv_status);
+
+        // 强制滚动条始终可见，不淡出
+        tvLogScroll.setScrollbarFadingEnabled(false);
+        tvLogScroll.setVerticalScrollBarEnabled(true);
         
         // 初始状态：重签名相关按钮不可用
         btnResignApk.setEnabled(false);
