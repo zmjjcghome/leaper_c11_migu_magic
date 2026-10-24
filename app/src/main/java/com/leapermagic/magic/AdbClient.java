@@ -1068,7 +1068,7 @@ public class AdbClient {
     private static final int SYNC_HEADER_SIZE = 24;
     
     // 文件传输分块大小（原始数据）- 控制在 MAX_PAYLOAD(256KB) 以内，无线ADB建议更小
-    private static final int FILE_CHUNK_SIZE = 128 * 1024;  // 128KB 每块
+    private static final int FILE_CHUNK_SIZE = 64 * 1024;  // 64KB 每块
     // 流式Shell推送块大小（无每块握手开销，可使用更大块）
     private static final int STREAM_SHELL_CHUNK_SIZE = 64 * 1024;  // 64KB 每块
     // ADB file: 原生文件写入协议常量
