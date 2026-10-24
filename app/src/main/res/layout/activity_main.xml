@@ -134,6 +134,7 @@
     android:scrollbars="vertical"
     android:scrollbarStyle="outsideOverlay"
     android:overScrollMode="never"
+    android:scrollbarSize="3dp"
     android:background="#1A1A1A"
     android:padding="1dp">
         <TextView
