@@ -737,6 +737,9 @@ public class MainActivity extends AppCompatActivity {
     /**
      * 通过 ADB push 将 DEX 文件推送到设备 /data/local/tmp/ 目录
      */
+    /**
+     * 尝试通过 ADB push 推送 DEX，带重试机制和 Shell 备用方案
+     */
     private boolean tryPushDex(String destPath) {
         // 检查 ADB 端口是否已检测
         if (adbdPort <= 0) {
@@ -770,29 +773,23 @@ public class MainActivity extends AppCompatActivity {
             return false;
         }
 
-        // 通过 ADB push 推送到设备 /data/local/tmp/
-        appendLog("  通过 ADB push 推送 DEX → " + destPath);
-        try {
-            AdbClient.ShellResult pushResult = AdbClient.pushFile(
-                    "127.0.0.1", adbdPort, dexData, destPath);
+        // 先尝试 ADB push 方式（带重试）
+        appendLog("  尝试通过 ADB push 推送 DEX → " + destPath + " (最大重试3次)");
+        boolean pushSuccess = pushFileWithRetry("127.0.0.1", adbdPort, dexData, destPath);
 
-            if (pushResult.isSuccess()) {
-                appendLog("  DEX 推送成功: " + destPath);
-                // 验证远程文件大小
-                AdbClient.ShellResult lsResult = AdbClient.executeShellOneShot(
-                        "127.0.0.1", adbdPort,
-                        "ls -la " + AdbClient.escapeShellArg(destPath));
-                appendLog("  远程文件信息: " + lsResult.stdout.trim());
-                return true;
-            } else {
-                appendLog("  DEX 推送失败: " + pushResult.stderr);
-                return false;
-            }
-        } catch (Exception e) {
-            appendLog("  ADB push 异常: " + e.getMessage());
-            e.printStackTrace();
-            return false;
+        if (pushSuccess) {
+            appendLog("  DEX 通过 ADB push 推送成功: " + destPath);
+            // 验证远程文件大小
+            AdbClient.ShellResult lsResult = AdbClient.executeShellOneShot(
+                    "127.0.0.1", adbdPort,
+                    "ls -la " + AdbClient.escapeShellArg(destPath));
+            appendLog("  远程文件信息: " + lsResult.stdout.trim());
+            return true;
         }
+
+        // ADB push 全部失败，尝试 Shell 备用方案
+        appendLog("  ADB push 全部失败，尝试 Shell 备用方案推送 DEX...");
+        return pushFileViaShell(dexData, destPath);
     }
 
     /**
@@ -812,6 +809,9 @@ public class MainActivity extends AppCompatActivity {
 
     /**
      * 通过 ADB push 将 APK 文件推送到设备 /data/local/tmp/ 目录
+     */
+    /**
+     * 尝试通过 ADB push 推送 APK，带重试机制和 Shell 备用方案
      */
     private boolean tryCopyApk(String destPath) {
         // 检查 ADB 端口是否已检测
@@ -846,27 +846,187 @@ public class MainActivity extends AppCompatActivity {
             return false;
         }
 
-        // 通过 ADB push 推送到设备 /data/local/tmp/
-        appendLog("  通过 ADB push 推送 APK → " + destPath);
-        try {
-            AdbClient.ShellResult pushResult = AdbClient.pushFile(
-                    "127.0.0.1", adbdPort, apkData, destPath);
+        // 先尝试 ADB push 方式（带重试）
+        appendLog("  尝试通过 ADB push 推送 APK → " + destPath + " (最大重试3次)");
+        boolean pushSuccess = pushFileWithRetry("127.0.0.1", adbdPort, apkData, destPath);
 
-            if (pushResult.isSuccess()) {
-                appendLog("  APK 推送成功: " + destPath);
-                // 验证远程文件大小
+        if (pushSuccess) {
+            appendLog("  APK 通过 ADB push 推送成功: " + destPath);
+            // 验证远程文件大小
+            AdbClient.ShellResult lsResult = AdbClient.executeShellOneShot(
+                    "127.0.0.1", adbdPort,
+                    "ls -la " + AdbClient.escapeShellArg(destPath));
+            appendLog("  远程文件信息: " + lsResult.stdout.trim());
+            return true;
+        }
+
+        // ADB push 全部失败，尝试 Shell 备用方案
+        appendLog("  ADB push 全部失败，尝试 Shell 备用方案推送 APK...");
+        return pushFileViaShell(apkData, destPath);
+    }
+
+    /**
+     * 带重试机制的 ADB push 文件推送
+     * 每次失败后等待递增时间再重试，最多重试 MAX_PUSH_RETRY 次
+     */
+    private static final int MAX_PUSH_RETRY = 3;
+    private static final long PUSH_RETRY_DELAY_MS = 2000;
+
+    /**
+     * 通过 ADB push 推送文件数据到设备，带重试机制
+     * @return 成功返回 true，所有重试失败返回 false
+     */
+    private boolean pushFileWithRetry(String ip, int port, byte[] data, String remotePath) {
+        for (int attempt = 1; attempt <= MAX_PUSH_RETRY; attempt++) {
+            try {
+                appendLog("    第 " + attempt + "/" + MAX_PUSH_RETRY + " 次尝试推送...");
+                AdbClient.ShellResult pushResult = AdbClient.pushFile(ip, port, data, remotePath);
+
+                if (pushResult.isSuccess()) {
+                    // 验证远程文件大小
+                    AdbClient.ShellResult lsResult = AdbClient.executeShellOneShot(
+                            ip, port,
+                            "stat -c %s " + AdbClient.escapeShellArg(remotePath));
+                    int remoteSize = 0;
+                    try {
+                        remoteSize = Integer.parseInt(lsResult.stdout.trim());
+                    } catch (NumberFormatException ignored) {
+                        // stat 不可用，用 ls 代替
+                        AdbClient.ShellResult lsResult2 = AdbClient.executeShellOneShot(
+                                ip, port,
+                                "ls -la " + AdbClient.escapeShellArg(remotePath));
+                        appendLog("    ls 结果: " + lsResult2.stdout.trim());
+                    }
+
+                    if (remoteSize == data.length || remoteSize == 0) {
+                        appendLog("    推送成功，文件大小: " + remoteSize + " bytes" +
+                                (remoteSize > 0 ? " (验证通过)" : " (stat不可用，跳过验证)"));
+                        return true;
+                    } else {
+                        appendLog("    文件大小不匹配: 期望=" + data.length + " 实际=" + remoteSize);
+                    }
+                } else {
+                    appendLog("    推送失败: " + pushResult.stderr);
+                }
+            } catch (Exception e) {
+                appendLog("    推送异常: " + e.getMessage());
+                if (e.getMessage() != null && e.getMessage().contains("Broken pipe")) {
+                    appendLog("    检测到 Broken pipe，准备重试...");
+                }
+            }
+
+            // 重试前等待
+            if (attempt < MAX_PUSH_RETRY) {
+                long delay = PUSH_RETRY_DELAY_MS * attempt;
+                appendLog("    等待 " + delay + "ms 后重试...");
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    appendLog("    重试等待被中断");
+                    return false;
+                }
+            }
+        }
+
+        appendLog("    所有 " + MAX_PUSH_RETRY + " 次尝试均失败");
+        return false;
+    }
+
+    /**
+     * 通过 Shell 方式推送文件（ADB push 失败时的备用方案）
+     * 使用 base64 编码 + shell 解码写入，分块传输避免命令过长
+     * @return 成功返回 true，失败返回 false
+     */
+    private boolean pushFileViaShell(byte[] data, String remotePath) {
+        appendLog("  [Shell备用] 开始推送文件 → " + remotePath + " (" + data.length + " bytes)");
+
+        // 先删除可能存在的旧文件
+        AdbClient.ShellResult rmResult = AdbClient.executeShellOneShot(
+                "127.0.0.1", adbdPort,
+                "rm -f " + AdbClient.escapeShellArg(remotePath));
+        if (!rmResult.isSuccess()) {
+            appendLog("  [Shell备用] 删除旧文件警告: " + rmResult.stderr);
+        }
+
+        // 分块写入：每块 4KB，base64 编码后通过 shell 写入
+        int chunkSize = 4096;
+        int offset = 0;
+        int totalWritten = 0;
+
+        try {
+            while (offset < data.length) {
+                int end = Math.min(offset + chunkSize, data.length);
+                byte[] chunk = Arrays.copyOfRange(data, offset, end);
+
+                // Base64 编码（去掉 padding 和换行）
+                String base64Chunk = android.util.Base64.encodeToString(
+                        chunk, android.util.Base64.NO_WRAP | android.util.Base64.URL_SAFE | android.util.Base64.NO_PADDING);
+
+                // 通过 shell 写入文件（使用 >> 追加模式）
+                String cmd = "echo -n \"" + base64Chunk + "\" | base64 -d >> " + AdbClient.escapeShellArg(remotePath);
+                AdbClient.ShellResult result = AdbClient.executeShellOneShot("127.0.0.1", adbdPort, cmd);
+
+                if (!result.isSuccess()) {
+                    appendLog("  [Shell备用] 写入失败 at offset " + offset + ": " + result.stderr);
+                    // 清理不完整文件
+                    AdbClient.executeShellOneShot("127.0.0.1", adbdPort,
+                            "rm -f " + AdbClient.escapeShellArg(remotePath));
+                    return false;
+                }
+
+                totalWritten += chunk.length;
+                offset = end;
+
+                // 每写入 16KB 打印一次进度
+                if (totalWritten % 16384 < chunkSize && offset < data.length) {
+                    appendLog("  [Shell备用] 已写入 " + totalWritten + "/" + data.length + " bytes");
+                }
+            }
+
+            // 验证文件大小
+            AdbClient.ShellResult statResult = AdbClient.executeShellOneShot(
+                    "127.0.0.1", adbdPort,
+                    "stat -c %s " + AdbClient.escapeShellArg(remotePath));
+            int fileSize = 0;
+            try {
+                fileSize = Integer.parseInt(statResult.stdout.trim());
+            } catch (NumberFormatException ignored) {
+                // 某些设备可能没有 stat 命令，用 ls 解析
                 AdbClient.ShellResult lsResult = AdbClient.executeShellOneShot(
                         "127.0.0.1", adbdPort,
-                        "ls -la " + AdbClient.escapeShellArg(destPath));
-                appendLog("  远程文件信息: " + lsResult.stdout.trim());
+                        "ls -la " + AdbClient.escapeShellArg(remotePath));
+                appendLog("  [Shell备用] ls 结果: " + lsResult.stdout.trim());
+                // 尝试从 ls 输出中解析文件大小
+                String[] parts = lsResult.stdout.trim().split("\\s+");
+                if (parts.length >= 5) {
+                    try {
+                        fileSize = Integer.parseInt(parts[4]);
+                    } catch (NumberFormatException ignored2) {
+                        fileSize = -1;
+                    }
+                }
+            }
+
+            if (fileSize == data.length) {
+                appendLog("  [Shell备用] 推送成功: " + remotePath + " (" + fileSize + " bytes, 验证通过)");
                 return true;
             } else {
-                appendLog("  APK 推送失败: " + pushResult.stderr);
+                appendLog("  [Shell备用] 文件大小不匹配: 期望=" + data.length + " 实际=" + fileSize);
+                // 清理不完整文件
+                AdbClient.executeShellOneShot("127.0.0.1", adbdPort,
+                        "rm -f " + AdbClient.escapeShellArg(remotePath));
                 return false;
             }
+
         } catch (Exception e) {
-            appendLog("  ADB push 异常: " + e.getMessage());
+            appendLog("  [Shell备用] 推送异常: " + e.getMessage());
             e.printStackTrace();
+            // 清理不完整文件
+            try {
+                AdbClient.executeShellOneShot("127.0.0.1", adbdPort,
+                        "rm -f " + AdbClient.escapeShellArg(remotePath));
+            } catch (Exception ignored) {}
             return false;
         }
     }
