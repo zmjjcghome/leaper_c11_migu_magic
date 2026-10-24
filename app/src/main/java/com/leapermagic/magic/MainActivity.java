@@ -940,6 +940,7 @@ public class MainActivity extends AppCompatActivity {
             return null;
         }
         
+               
         // 尝试直接从 URI 获取路径
         String uriPath = selectedApkUri.getPath();
         if (uriPath != null && uriPath.startsWith("/")) {
@@ -967,11 +968,7 @@ public class MainActivity extends AppCompatActivity {
             }
             
             // 从 URI 提取文件名
-            String fileName = "apk_temp_" + System.currentTimeMillis() + ".apk";
-            String lastPathSegment = selectedApkUri.getLastPathSegment();
-            if (lastPathSegment != null && lastPathSegment.contains(".")) {
-                fileName = lastPathSegment;
-            }
+            String fileName = "apk_temp_.apk";
             
             File tempFile = new File(externalDir, fileName);
             InputStream inputStream = getContentResolver().openInputStream(selectedApkUri);
