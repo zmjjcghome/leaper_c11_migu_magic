@@ -1355,7 +1355,7 @@ public class AdbClient {
      * @param remotePath 远程路径
      * @return 执行结果
      */
-    private static ShellResult pushFileStreamShell(AdbConnection connection, byte[] data, String remotePath) {
+    private static ShellResult pushFileStreamShell(AdbConnection connection, byte[] data, String remotePath)  throws IOException {
         String tag = "PushStreamShell[" + connection.serial + "]";
         logI(tag, "流式Shell推送开始 | 大小=" + data.length + " bytes | 目标=" + remotePath);
         
@@ -1478,7 +1478,7 @@ public class AdbClient {
      * @param remotePath 远程路径
      * @return 执行结果
      */
-    private static ShellResult pushFileStreamShellFromFile(AdbConnection connection, String sourceFilePath, String remotePath) {
+    private static ShellResult pushFileStreamShellFromFile(AdbConnection connection, String sourceFilePath, String remotePath)  throws IOException {
         String tag = "PushStreamShellFile[" + connection.serial + "]";
         File sourceFile = new File(sourceFilePath);
         long fileSize = sourceFile.length();
