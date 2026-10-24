@@ -596,7 +596,7 @@ public class AdbClient {
     public static ShellResult executeShell(AdbConnection connection, String command) {
         String tag = "Shell[" + connection.serial + "]";
     
-        logI(tag, "========== 执行命令: '" + command + "' ==========");
+        logI(tag, "========== 执行命令: '" + command.substring(0, Math.min(300, command.length())).trim() + "' ==========");
     
         try {
             if (connection.isClosed()) {
@@ -774,7 +774,7 @@ public class AdbClient {
     public static ShellResult executeShellOneShot(String host, int port, String command) {
         String tag = "OneShot[" + host + ":" + port + "]";
         
-        logI(tag, "一次性执行开始 | 命令='" + command + "'");
+        logI(tag, "一次性执行开始 | 命令='" + command.substring(0, Math.min(300, command.length())).trim() + "'");
         
         AdbConnectionResult result = connect(host, port);
         if (!result.success || result.connection == null) {
