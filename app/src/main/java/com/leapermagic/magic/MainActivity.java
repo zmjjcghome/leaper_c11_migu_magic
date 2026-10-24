@@ -790,7 +790,7 @@ public class MainActivity extends AppCompatActivity {
                     }
                     
                     AdbClient.ShellResult cpResult = AdbClient.executeShell(conn, 
-                            "cp \"" + dexTempPath + "\" \"" + dexRemotePath + "\"");
+                            "cp " + dexTempPath + " " + dexRemotePath);
 
                     if (!cpResult.isSuccess()) {
                     
@@ -836,7 +836,7 @@ public class MainActivity extends AppCompatActivity {
                 Thread.sleep(500);
                 
                 AdbClient.ShellResult apkCpResult = AdbClient.executeShell(conn, 
-                        "cp \"" + apkFilePath + "\" \"" + apkRemotePath + "\"");
+                        "cp " + apkFilePath + " " + apkRemotePath );
 
                 if (!apkCpResult.isSuccess()) {
 
