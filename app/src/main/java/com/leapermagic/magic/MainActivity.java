@@ -1050,7 +1050,7 @@ private void executeInstall() {
         //checkPort("127.0.0.1", 5555);
         // 然后再尝试连接
         //connectToDevice("127.0.0.1", 5555);
-        if (adbConnection == null ) {
+        if (adbConnection == null || adbConnection.isClosed()) {
             appendLog("========== 开始初始化adb ==========");
             initAdbConnection();
         }
