@@ -835,7 +835,7 @@ public class MainActivity extends AppCompatActivity {
 
                 Thread.sleep(500);
                 
-                cpResult = AdbClient.executeShell(conn, 
+                AdbClient.ShellResult cpResult = AdbClient.executeShell(conn, 
                         "cp " + AdbClient.escapeShellArg(apkFilePath) + " " + AdbClient.escapeShellArg(apkRemotePath));
 
                 if (!cpResult.isSuccess()) {
