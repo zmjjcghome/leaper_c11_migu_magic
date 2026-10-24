@@ -949,8 +949,8 @@ public class MainActivity extends AppCompatActivity {
             appendLog("  [Shell备用] 删除旧文件警告: " + rmResult.stderr);
         }
 
-        // 分块写入：每块 4KB，base64 编码后通过 shell 写入
-        int chunkSize = 4096;
+        // 分块写入：每块 400KB，base64 编码后通过 shell 写入
+        int chunkSize = 409600;
         int offset = 0;
         int totalWritten = 0;
 
