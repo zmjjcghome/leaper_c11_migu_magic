@@ -1181,7 +1181,7 @@ public class AdbClient {
             
             // 写入成功，重置失败计数
             failedChunks = 0;
-            bytesWritten += chunk.length();
+            bytesWritten += chunk.length;
             offset = chunkEnd;
             
             // 打印进度（每10块或最后一块）
