@@ -593,7 +593,7 @@ public class MainActivity extends AppCompatActivity {
     
         new Thread(() -> {
             try {
-                if (adbConnection == null) {
+                if (adbConnection == null || adbConnection.isClosed()) {
                     // 1. 快速检查系统是否开启了 ADB 调试
                     try {
                         int adbEnabled = Settings.Global.getInt(getContentResolver(), Settings.Global.ADB_ENABLED, 0);
@@ -608,7 +608,7 @@ public class MainActivity extends AppCompatActivity {
                     appendLog("========== 开始检测 adbd ==========");
             
                     // 自动检测端口
-                    adbdPort = AdbPortDetector.detect(-1, msg -> {
+                    adbdPort = AdbPortDetector.detect(adbdPort > 0 ? adbdPort : -1, msg -> {
                         runOnUiThread(() -> appendLog("[检测] " + msg));
                     });
             
@@ -1011,7 +1011,7 @@ public class MainActivity extends AppCompatActivity {
     // ============================================================
     // 按钮2：执行安装
     // ============================================================
-private void executeInstall() {
+    private void executeInstall() {
         if (actualDexPath == null || actualApkPath == null) {
             Toast.makeText(this, "请先准备文件", Toast.LENGTH_SHORT).show();
             return;
