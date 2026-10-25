@@ -543,6 +543,10 @@ public class JadbUtil {
         } catch (JadbException e) {
             logE(tag, "jadb连接异常", e);
             return new AdbConnectionResult(false, "jadb连接异常: " + e.getMessage(), null);
+        } catch (Exception e) {
+            logE(tag, "jadb连接异常", e);
+            e.printStackTrace(); // 务必打印异常，看是否是 Connection Refused
+            return new AdbConnectionResult(false, "jadb连接异常: " + e.getMessage(), null);
         }
     }
 
