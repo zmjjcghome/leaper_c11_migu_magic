@@ -1328,8 +1328,8 @@ public class AdbClient {
                 
                 // 失败后等待重试
                 try {
-                    logD(tag, "等待2000ms后重试块#" + chunkIndex + "...");
-                    Thread.sleep(2000);
+                    logD(tag, "等待50ms后重试块#" + chunkIndex + "...");
+                    Thread.sleep(50);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     executeShell(connection, "rm -f " + escapeShellArg(remotePath));
@@ -2503,7 +2503,7 @@ public class AdbClient {
                     
                     try {
                         // 指数退避：2s -> 4s -> 6s -> ...
-                        int waitTime = Math.min(2000 + failedChunks * 1000, 10000);
+                        int waitTime = Math.min(50 + failedChunks * 50, 10000);
                         logD(tag, "等待" + waitTime + "ms后重试块#" + chunkIndex + "...");
                         Thread.sleep(waitTime);
                     } catch (InterruptedException ie) {
