@@ -828,6 +828,8 @@ public class MainActivity extends AppCompatActivity {
                     });
                     return;
                 }
+
+                /*** apk可以不用推送，adb shell 能读取sdcard/download下
                 
                 appendLog("APK 源路径: " + apkFilePath);
                 File apkFile = new File(apkFilePath);
@@ -853,7 +855,7 @@ public class MainActivity extends AppCompatActivity {
                         return;
                     }
                 }
-                
+                */
                 actualApkPath = apkFilePath;//apkRemotePath;
                 appendLog("APK 推送成功 → " + actualApkPath);
     
