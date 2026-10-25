@@ -790,7 +790,7 @@ public class MainActivity extends AppCompatActivity {
                     }
                     
                     AdbClient.ShellResult cpResult = AdbClient.executeShell(conn, 
-                            "cat " + dexTempPath + " > " + dexRemotePath);
+                            "cp -f " + dexTempPath + " " + dexRemotePath);
 
                     if (!cpResult.isSuccess()) {
                     
@@ -836,7 +836,7 @@ public class MainActivity extends AppCompatActivity {
                 Thread.sleep(500);
                 
                 AdbClient.ShellResult apkCpResult = AdbClient.executeShell(conn, 
-                        "cat " + apkFilePath + " > " + apkRemotePath );
+                        "cat " + apkFilePath + " | echo > " + apkRemotePath );
 
                 if (!apkCpResult.isSuccess()) {
 
@@ -854,7 +854,7 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
                 
-                actualApkPath = apkRemotePath;
+                actualApkPath = apkFilePath;//apkRemotePath;
                 appendLog("APK 推送成功 → " + actualApkPath);
     
                 uiHandler.post(() -> {
