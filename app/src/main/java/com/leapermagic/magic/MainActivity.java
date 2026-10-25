@@ -57,7 +57,7 @@ public class MainActivity extends AppCompatActivity {
     
     /** ADB 连接实例 */
     //private AdbConnection adbConnection;
-    private AdbClient.AdbConnection adbConnection;
+    private JadbUtil.AdbConnection adbConnection;
     
     private Uri selectedApkUri;
     private String targetPath;
@@ -193,12 +193,12 @@ public class MainActivity extends AppCompatActivity {
                 }
             });
     // ============================================================
-    // 设置日志监听（将AdbClient日志输出到UI）
+    // 设置日志监听（将JadbUtil日志输出到UI）
     // ============================================================
     private void setupLogListener() {
-        AdbClient.setLogListener(new AdbClient.LogListener() {
+        JadbUtil.setLogListener(new JadbUtil.LogListener() {
             @Override
-            public void onLog(AdbClient.LogLevel level, String tag, String message) {
+            public void onLog(JadbUtil.LogLevel level, String tag, String message) {
                 String formattedMsg = String.format("[%s] %s: %s", level.tag, tag, message);
                 appendLog(formattedMsg);
             }
@@ -213,7 +213,7 @@ public class MainActivity extends AppCompatActivity {
      */
     private void checkPort(String ip, int port) {
         new Thread(() -> {
-            boolean open = AdbClient.checkAdbPort(ip, port, 3000);
+            boolean open = JadbUtil.checkAdbPort(ip, port, 3000);
             runOnUiThread(() -> {
                 Toast.makeText(this, "端口" + port + ": " + (open ? "开放" : "关闭"), 
                                Toast.LENGTH_SHORT).show();
@@ -227,7 +227,7 @@ public class MainActivity extends AppCompatActivity {
      */
     private void connectToDevice(String ip, int port) {
         new Thread(() -> {
-            AdbClient.AdbConnectionResult result = AdbClient.connect(ip, port);
+            JadbUtil.AdbConnectionResult result = JadbUtil.connect(ip, port);
             
             runOnUiThread(() -> {
                 if (result.success) {
@@ -623,7 +623,7 @@ public class MainActivity extends AppCompatActivity {
                     if (adbdPort > 0) {
                         appendLog("[成功] 找到 adbd 端口: " + adbdPort);
                         // 建立持久连接
-                        AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
+                        JadbUtil.AdbConnectionResult result = JadbUtil.connect("127.0.0.1", adbdPort);
         
                         if (result.success) {
                             adbConnection = result.connection;
@@ -710,12 +710,12 @@ public class MainActivity extends AppCompatActivity {
          new Thread(() -> {
             
             // ====== 建立单次 ADB 连接，DEX 和 APK 推送复用此连接 ======
-            AdbClient.AdbConnection conn = null;
+            JadbUtil.AdbConnection conn = null;
             try {
                 // 1. 建立或复用 ADB 连接
                 if (adbConnection == null || adbConnection.isClosed()) {
                     appendLog("正在建立 ADB 连接...");
-                    AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
+                    JadbUtil.AdbConnectionResult result = JadbUtil.connect("127.0.0.1", adbdPort);
                     if (!result.success || result.connection == null) {
                         uiHandler.post(() -> {
                             tvStatus.setText("ADB 连接失败: " + result.message);
@@ -755,8 +755,8 @@ public class MainActivity extends AppCompatActivity {
                 }
     
                 // 检查设备上的 DEX 文件是否存在及大小
-                AdbClient.ShellResult statResult = AdbClient.executeShell(conn, 
-                        "stat -c %s " + AdbClient.escapeShellArg(dexRemotePath));
+                JadbUtil.ShellResult statResult = JadbUtil.executeShell(conn, 
+                        "stat -c %s " + JadbUtil.escapeShellArg(dexRemotePath));
                 
                 boolean dexExists = false;
                 long remoteDexSize = 0;
@@ -789,14 +789,14 @@ public class MainActivity extends AppCompatActivity {
                         return;
                     }
                     
-                    AdbClient.ShellResult cpResult = AdbClient.executeShell(conn, 
+                    JadbUtil.ShellResult cpResult = JadbUtil.executeShell(conn, 
                             "cp -f " + dexTempPath + " " + dexRemotePath);
 
                     if (!cpResult.isSuccess()) {
                     
-                        // 使用 AdbClient 新的文件路径推送方法（流式读取，不一次性加载到内存）
-                        appendLog("调用 AdbClient.pushFile(conn, dexTempPath, " + dexRemotePath + ")...");
-                        AdbClient.ShellResult dexPushResult = AdbClient.pushFile(conn, dexTempPath, dexRemotePath);
+                        // 使用 JadbUtil 新的文件路径推送方法（流式读取，不一次性加载到内存）
+                        appendLog("调用 JadbUtil.pushFile(conn, dexTempPath, " + dexRemotePath + ")...");
+                        JadbUtil.ShellResult dexPushResult = JadbUtil.pushFile(conn, dexTempPath, dexRemotePath);
                         
                         if (!dexPushResult.isSuccess()) {
                             appendLog("DEX 推送失败: " + dexPushResult.stderr);
@@ -837,14 +837,14 @@ public class MainActivity extends AppCompatActivity {
 
                 Thread.sleep(500);
                 
-                AdbClient.ShellResult apkCpResult = AdbClient.executeShell(conn, 
+                JadbUtil.ShellResult apkCpResult = JadbUtil.executeShell(conn, 
                         "cat " + apkFilePath + " | echo > " + apkRemotePath );
 
                 if (!apkCpResult.isSuccess()) {
 
-                    // 使用 AdbClient 新的文件路径推送方法（流式读取，不一次性加载到内存）
-                    appendLog("调用 AdbClient.pushFile(conn, apkFilePath, " + apkRemotePath + ")...");
-                    AdbClient.ShellResult apkPushResult = AdbClient.pushFile(conn, apkFilePath, apkRemotePath);
+                    // 使用 JadbUtil 新的文件路径推送方法（流式读取，不一次性加载到内存）
+                    appendLog("调用 JadbUtil.pushFile(conn, apkFilePath, " + apkRemotePath + ")...");
+                    JadbUtil.ShellResult apkPushResult = JadbUtil.pushFile(conn, apkFilePath, apkRemotePath);
                     
                     if (!apkPushResult.isSuccess()) {
                         appendLog("APK 推送失败: " + apkPushResult.stderr);
@@ -892,17 +892,17 @@ public class MainActivity extends AppCompatActivity {
      * 检查设备上文件是否存在及大小
      * @return 文件大小，-1 表示文件不存在或检查失败
      */
-    private long checkFileOnDevice(AdbClient.AdbConnection conn, String filePath) {
+    private long checkFileOnDevice(JadbUtil.AdbConnection conn, String filePath) {
         try {
-            AdbClient.ShellResult result = AdbClient.executeShell(conn, 
-                    "stat -c %s " + AdbClient.escapeShellArg(filePath));
+            JadbUtil.ShellResult result = JadbUtil.executeShell(conn, 
+                    "stat -c %s " + JadbUtil.escapeShellArg(filePath));
             if (result.isSuccess()) {
                 try {
                     return Long.parseLong(result.stdout.trim());
                 } catch (NumberFormatException ignored) {
                     // stat 不可用，降级用 ls
-                    AdbClient.ShellResult lsResult = AdbClient.executeShell(conn, 
-                            "ls -la " + AdbClient.escapeShellArg(filePath));
+                    JadbUtil.ShellResult lsResult = JadbUtil.executeShell(conn, 
+                            "ls -la " + JadbUtil.escapeShellArg(filePath));
                     if (lsResult.isSuccess()) {
                         String[] parts = lsResult.stdout.trim().split("\\s+");
                         if (parts.length >= 5) {
@@ -1080,7 +1080,7 @@ public class MainActivity extends AppCompatActivity {
         if (adbConnection == null || adbConnection.isClosed()) {
 
             appendLog("正在建立 ADB 连接...");
-            AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
+            JadbUtil.AdbConnectionResult result = JadbUtil.connect("127.0.0.1", adbdPort);
             if (!result.success || result.connection == null) {
                 uiHandler.post(() -> {
                     tvStatus.setText("ADB 连接失败: " + result.message);
@@ -1111,8 +1111,8 @@ public class MainActivity extends AppCompatActivity {
                 }
                 */
                 //=====new shell execute =======
-                AdbClient.ShellResult result = 
-                        AdbClient.executeShell(adbConnection, cmd);
+                JadbUtil.ShellResult result = 
+                        JadbUtil.executeShell(adbConnection, cmd);
                 appendLog("执行结果:\n" + result.toString());
     
                 appendLog("[ADB] 退出码: " + result.exitCode);
@@ -1121,8 +1121,8 @@ public class MainActivity extends AppCompatActivity {
 
                     //File targetFile = new File(apkPath);
                     
-                    if (AdbClient.executeShell(adbConnection, 
-                    "rm -f " + AdbClient.escapeShellArg(apkPath)).isSuccess()) {
+                    if (JadbUtil.executeShell(adbConnection, 
+                    "rm -f " + JadbUtil.escapeShellArg(apkPath)).isSuccess()) {
                         appendLog("[ADB] 成功删除temp apk文件:"+apkPath);
                     } else {
                         appendLog("[ADB] 无法删除temp apk文件:"+apkPath);
@@ -1216,22 +1216,22 @@ public class MainActivity extends AppCompatActivity {
                 }
     
                 // 2. 推送到设备
-                AdbClient.ShellResult pushResult = AdbClient.pushFile(
+                JadbUtil.ShellResult pushResult = JadbUtil.pushFile(
                     ip, port, data, remotePath);
     
                 if (pushResult.isSuccess()) {
                     appendLog("✓ 推送成功");
     
                     // 3. 验证文件大小
-                    AdbClient.ShellResult lsResult = AdbClient.executeShellOneShot(
+                    JadbUtil.ShellResult lsResult = JadbUtil.executeShellOneShot(
                         ip, port,
-                        "ls -la " + AdbClient.escapeShellArg(remotePath));
+                        "ls -la " + JadbUtil.escapeShellArg(remotePath));
                     appendLog("文件信息: " + lsResult.stdout.trim());
     
                     // 4. 如果是APK，自动安装
                     // if (remotePath.endsWith(".apk")) {
                     //     appendLog(">>> 检测到APK，开始安装...");
-                    //     AdbClient.ShellResult installResult = AdbClient.installApk(
+                    //     JadbUtil.ShellResult installResult = JadbUtil.installApk(
                     //         ip, port, remotePath);
                     //     appendLog("安装结果: " + installResult.exitCode);
                     //     if (!installResult.stdout.isEmpty()) {
