@@ -13,6 +13,10 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;  // ← 新增
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
+import java.security.PrivateKey;
+import java.io.FileOutputStream;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -63,6 +67,131 @@ public class AdbClient {
     private static final int AUTH_TYPE_TOKEN = 1;
     private static final int AUTH_TYPE_SIGNATURE = 2;
     private static final int AUTH_TYPE_RSAPUBLICKEY = 3;
+    // ==================== RSA 持久化密钥配置 ====================
+    private static volatile KeyPair sGlobalAdbKeyPair;
+    /**
+     * 默认密钥文件名，和PC adb保持一致
+     */
+    public static final String FILE_ADBKEY = "adbkey";
+    public static final String FILE_ADBKEY_PUB = "adbkey.pub";
+
+
+
+    /**
+     * 获取全局复用ADB RSA密钥（内存缓存）
+     * 注意：不会做磁盘IO；优先使用 loadOrCreatePersistentKeyPair() 做持久化加载
+     */
+    public static KeyPair getGlobalAdbKey() {
+        if (sGlobalAdbKeyPair == null) {
+            synchronized (AdbClient.class) {
+                if (sGlobalAdbKeyPair == null) {
+                    logD("RSA", "初始化内存全局RSA密钥（未持久化）");
+                    sGlobalAdbKeyPair = generateAdbKey();
+                }
+            }
+        }
+        return sGlobalAdbKeyPair;
+    }
+
+    /**
+     * 手动重置内存全局密钥（内存，不写磁盘）
+     */
+    public static void generateGlobalAdbKey() {
+        synchronized (AdbClient.class) {
+            sGlobalAdbKeyPair = generateAdbKey();
+        }
+    }
+
+    /**
+     * 清空内存缓存密钥，不会删除磁盘文件
+     */
+    public static void clearGlobalAdbKey() {
+        synchronized (AdbClient.class) {
+            sGlobalAdbKeyPair = null;
+        }
+    }
+
+    /**
+     * 【持久化入口】加载磁盘adbkey，没有就生成并保存到本地；赋值给全局内存缓存
+     * @param keyStoreDir 密钥存放目录，目录必须存在；Android建议使用context.getFilesDir()
+     * @return KeyPair
+     * @throws Exception IO / 密钥解析异常
+     */
+    public static KeyPair loadOrCreatePersistentKeyPair(File keyStoreDir) throws Exception {
+        if (!keyStoreDir.exists() || !keyStoreDir.isDirectory()) {
+            throw new IOException("密钥目录不存在或者不是目录：" + keyStoreDir.getAbsolutePath());
+        }
+        synchronized (AdbClient.class) {
+            KeyPair loaded = readKeyPairFromFile(keyStoreDir);
+            if (loaded != null) {
+                logI("RSA-Persist", "成功从磁盘加载adbkey密钥：" + keyStoreDir.getAbsolutePath());
+                sGlobalAdbKeyPair = loaded;
+                return loaded;
+            }
+            // 文件不存在，生成新密钥并保存
+            logI("RSA-Persist", "磁盘无adbkey密钥，生成新RSA2048并持久化保存");
+            KeyPair newKey = generateAdbKey();
+            saveKeyPairToFile(newKey, keyStoreDir);
+            sGlobalAdbKeyPair = newKey;
+            return newKey;
+        }
+    }
+
+    /**
+     * 从目录读取adbkey私钥 + adbkey.pub公钥，返回KeyPair；文件缺失返回null
+     */
+    public static KeyPair readKeyPairFromFile(File keyStoreDir) throws Exception {
+        File privFile = new File(keyStoreDir, FILE_ADBKEY);
+        File pubFile = new File(keyStoreDir, FILE_ADBKEY_PUB);
+        if (!privFile.exists() || !pubFile.exists()) {
+            return null;
+        }
+        // 读取私钥 PKCS#8
+        byte[] privBytes = java.nio.file.Files.readAllBytes(privFile.toPath());
+        PKCS8EncodedKeySpec privSpec = new PKCS8EncodedKeySpec(privBytes);
+        java.security.KeyFactory kf = java.security.KeyFactory.getInstance("RSA");
+        PrivateKey privateKey = kf.generatePrivate(privSpec);
+
+        // 读取公钥（adbkey.pub存储的是adb格式base64带注释，这里我们不从pub文件解析公钥；直接私钥getPublic）
+        return new KeyPair(privateKey.getPublic(), privateKey);
+    }
+
+    /**
+     * 将KeyPair保存为adbkey(私钥)、adbkey.pub(adb标准公钥格式)
+     * adbkey.pub格式：base64(x509 pubkey) + " adbclient@android\n"
+     */
+    public static void saveKeyPairToFile(KeyPair keyPair, File keyStoreDir) throws Exception {
+        File privFile = new File(keyStoreDir, FILE_ADBKEY);
+        File pubFile = new File(keyStoreDir, FILE_ADBKEY_PUB);
+
+        // 写入私钥 raw PKCS8
+        try (FileOutputStream fos = new FileOutputStream(privFile)) {
+            fos.write(keyPair.getPrivate().getEncoded());
+        }
+        // 设置私钥权限，类unix系统 0600
+        privFile.setReadable(true, true);
+        privFile.setWritable(true, true);
+        privFile.setExecutable(false);
+
+        // adb标准公钥格式，和adb --key输出完全一致
+        String base64Pub = Base64.getEncoder().withoutPadding().encodeToString(keyPair.getPublic().getEncoded());
+        String pubContent = base64Pub + " adbclient@android\n";
+        try (FileOutputStream fos = new FileOutputStream(pubFile)) {
+            fos.write(pubContent.getBytes(StandardCharsets.UTF_8));
+        }
+        logI("RSA-Persist", "密钥持久化完成 priv:" + privFile.getAbsolutePath() + " pub:" + pubFile.getAbsolutePath());
+    }
+
+    /**
+     * 删除磁盘上adbkey、adbkey.pub文件
+     */
+    public static void deletePersistentKeyFiles(File keyStoreDir) {
+        new File(keyStoreDir, FILE_ADBKEY).delete();
+        new File(keyStoreDir, FILE_ADBKEY_PUB).delete();
+        logD("RSA-Persist", "已删除磁盘密钥文件");
+    }
+
+
 
     // ==================== 日志接口 ====================
     
@@ -350,11 +479,15 @@ public class AdbClient {
                                    authType == AUTH_TYPE_SIGNATURE ? "SIGNATURE" : 
                                    authType == AUTH_TYPE_RSAPUBLICKEY ? "RSAPUBLICKEY" : "UNKNOWN") + ")");
                 if (keyPair == null) {
+                    /** 删除，使用全局的 RSA
                     logD(tag, "生成新的RSA密钥对...");
                     long keyGenStart = System.currentTimeMillis();
                     keyPair = generateAdbKey();
                     long keyGenTime = System.currentTimeMillis() - keyGenStart;
                     logI(tag, "RSA密钥对生成完成 | 耗时=" + keyGenTime + "ms | 强度=2048位");
+                    删除，使用全局的*/
+		    keyPair = getGlobalAdbKey();
+                    logD(tag, "使用全局RSA密钥");
                 }
                 // 发送公钥
                 logD(tag, "发送公钥...");
