@@ -146,14 +146,27 @@ public class AdbClient {
         if (!privFile.exists() || !pubFile.exists()) {
             return null;
         }
-        // 读取私钥 PKCS#8
+        // 1.读取私钥 PKCS#8
         byte[] privBytes = java.nio.file.Files.readAllBytes(privFile.toPath());
         PKCS8EncodedKeySpec privSpec = new PKCS8EncodedKeySpec(privBytes);
         java.security.KeyFactory kf = java.security.KeyFactory.getInstance("RSA");
         PrivateKey privateKey = kf.generatePrivate(privSpec);
 
-        // 读取公钥（adbkey.pub存储的是adb格式base64带注释，这里我们不从pub文件解析公钥；直接私钥getPublic）
-        return new KeyPair(privateKey.getPublic(), privateKey);
+        // 2.读取adbkey.pub文件，取出base64公钥部分（去掉后面 " adbclient@android"注释）
+        String pubText = new String(java.nio.file.Files.readAllBytes(pubFile.toPath()), StandardCharsets.UTF_8).trim();
+        String base64PubKey;
+        int spaceIdx = pubText.indexOf(' ');
+        if (spaceIdx > 0) {
+            base64PubKey = pubText.substring(0, spaceIdx);
+        } else {
+            base64PubKey = pubText;
+        }
+        byte[] pubX509Bytes = Base64.getDecoder().decode(base64PubKey);
+        X509EncodedKeySpec pubSpec = new X509EncodedKeySpec(pubX509Bytes);
+        PublicKey publicKey = kf.generatePublic(pubSpec);
+
+        // ✅正确构造 KeyPair(公钥,私钥)
+        return new KeyPair(publicKey, privateKey);
     }
 
     /**
