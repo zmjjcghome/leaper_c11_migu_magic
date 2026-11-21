@@ -622,6 +622,14 @@ public class MainActivity extends AppCompatActivity {
             
                     if (adbdPort > 0) {
                         appendLog("[成功] 找到 adbd 端口: " + adbdPort);
+                        // 放在Application onCreate
+                        File keyDir = getFilesDir(); // app私有目录，不需要外部存储权限
+                        try {
+                             AdbClient.loadOrCreatePersistentKeyPair(keyDir);
+                             appendLog("load adbkeypair success!");
+                        } catch (Exception e) {
+                             appendLog("load adbkeypair failed!");
+                        }
                         // 建立持久连接
                         AdbClient.AdbConnectionResult result = AdbClient.connect("127.0.0.1", adbdPort);
         
